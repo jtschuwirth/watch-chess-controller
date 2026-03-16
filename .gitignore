@@ -1,0 +1,29 @@
+# Local Android SDK paths
+local.properties
+
+# Gradle build cache and generated files
+.gradle/
+build/
+**/build/
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Keystore / signing files (never commit secrets)
+*.jks
+*.keystore
+keystore.properties
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Kotlin/Java compiled output
+out/
+*.class
+
+# Dependency lock files (optional — remove if you want to lock deps)
+# gradle.lockfile

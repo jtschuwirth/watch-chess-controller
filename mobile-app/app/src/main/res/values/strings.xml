@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Chess Mobile</string>
+    <string name="accessibility_service_description">Executes chess moves in Chess.com or Lichess received from your Galaxy Watch.</string>
+</resources>
