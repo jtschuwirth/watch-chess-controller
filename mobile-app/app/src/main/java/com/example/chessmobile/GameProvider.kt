@@ -15,9 +15,19 @@ import kotlin.random.Random
 
 enum class ColorChoice { WHITE, BLACK, RANDOM }
 
+enum class TimeControl(val label: String, val limitSeconds: Int?, val increment: Int) {
+    TEN_MIN("10 min", 600, 0),
+    THIRTY_MIN("30 min", 1800, 0),
+    UNLIMITED("Unlimited", null, 0)
+}
+
 sealed class ProviderConfig {
     data class RandomMoves(val color: ColorChoice) : ProviderConfig()
-    data class Lichess(val level: Int, val color: ColorChoice = ColorChoice.WHITE) : ProviderConfig()
+    data class Lichess(
+        val level: Int,
+        val color: ColorChoice = ColorChoice.WHITE,
+        val timeControl: TimeControl = TimeControl.TEN_MIN
+    ) : ProviderConfig()
 }
 
 /**
@@ -37,6 +47,8 @@ interface GameProvider {
     fun onPlayerMove(san: String, context: Context, callback: (opponentMove: String?, error: String?) -> Unit)
     fun onGameStart(config: ProviderConfig, context: Context) {}
     fun onGameEnd() {}
+    fun onResign(context: Context) {}
+    fun onDrawOffer(context: Context) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +70,16 @@ object RandomMovesProvider : GameProvider {
         if (playerColor == ChessColor.BLACK) {
             MoveRepository.triggerRandomFirstMove(context)
         }
+    }
+
+    override fun onResign(context: Context) {
+        val gameInfo = MoveRepository.gameInfo.value ?: return
+        val opponentSide = if (gameInfo.playerColor == ChessColor.WHITE) "black" else "white"
+        MoveRepository.endGameWithResult("resign", opponentSide, context)
+    }
+
+    override fun onDrawOffer(context: Context) {
+        MoveRepository.endGameWithResult("draw", null, context)
     }
 }
 
@@ -103,7 +125,9 @@ class LichessProvider : GameProvider {
                 val result = LichessService.challengeAi(
                     apiKey = apiKey,
                     level = cfg.level,
-                    color = colorStr
+                    color = colorStr,
+                    clockLimitSeconds = cfg.timeControl.limitSeconds,
+                    clockIncrement = cfg.timeControl.increment
                 )
                 gameId = result.gameId
                 playerColor = result.playerColor

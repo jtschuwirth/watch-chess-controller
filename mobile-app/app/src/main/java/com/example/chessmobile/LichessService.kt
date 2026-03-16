@@ -44,7 +44,7 @@ object LichessService {
         apiKey: String,
         level: Int,
         color: String,
-        clockLimitSeconds: Int = 600,
+        clockLimitSeconds: Int? = 600,
         clockIncrement: Int = 0
     ): GameStartResult = withContext(Dispatchers.IO) {
         val url = URL("$BASE/api/challenge/ai")
@@ -57,8 +57,11 @@ object LichessService {
             doOutput = true
         }
 
-        val body = "level=$level&color=$color" +
-            "&clock.limit=$clockLimitSeconds&clock.increment=$clockIncrement"
+        val body = if (clockLimitSeconds != null) {
+            "level=$level&color=$color&clock.limit=$clockLimitSeconds&clock.increment=$clockIncrement"
+        } else {
+            "level=$level&color=$color"
+        }
         conn.outputStream.use { it.write(body.toByteArray()) }
 
         val responseCode = conn.responseCode

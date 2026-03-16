@@ -63,6 +63,8 @@ private const val PATH_CHESS_SYNC = "/chess/sync"
 private const val PATH_CHESS_SYNC_RESPONSE = "/chess/sync/response"
 private const val PATH_CHESS_GAME_START = "/chess/game/start"
 private const val PATH_CHESS_GAME_END = "/chess/game/end"
+private const val PATH_CHESS_RESIGN = "/chess/resign"
+private const val PATH_CHESS_DRAW_OFFER = "/chess/draw/offer"
 
 class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
     private val _uiState = MutableStateFlow(MoveInputState())
@@ -135,6 +137,14 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { sendSyncRequest() }
     }
 
+    fun onResign() {
+        viewModelScope.launch { sendToPhone(PATH_CHESS_RESIGN, "") }
+    }
+
+    fun onOfferDraw() {
+        viewModelScope.launch { sendToPhone(PATH_CHESS_DRAW_OFFER, "") }
+    }
+
     /**
      * Wakes the watch screen so the user can immediately input a move.
      *
@@ -154,41 +164,30 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun sendMoveToPhone(move: String) {
-        try {
-            val nodes = Wearable.getNodeClient(getApplication<Application>())
-                .connectedNodes.await()
-            if (nodes.isEmpty()) {
-                Log.w("ChessMoveViewModel", "No connected nodes found")
-                return
-            }
-            val payload = move.toByteArray(Charsets.UTF_8)
-            nodes.forEach { node ->
-                Wearable.getMessageClient(getApplication<Application>())
-                    .sendMessage(node.id, PATH_CHESS_MOVE, payload)
-                    .await()
-                Log.d("ChessMoveViewModel", "Sent '$move' to ${node.displayName}")
-            }
-        } catch (e: Exception) {
-            Log.e("ChessMoveViewModel", "Failed to send move '$move': ${e.message}")
-        }
+        sendToPhone(PATH_CHESS_MOVE, move)
     }
 
     private suspend fun sendSyncRequest() {
+        sendToPhone(PATH_CHESS_SYNC, "")
+    }
+
+    private suspend fun sendToPhone(path: String, payload: String) {
         try {
             val nodes = Wearable.getNodeClient(getApplication<Application>())
                 .connectedNodes.await()
             if (nodes.isEmpty()) {
-                Log.w("ChessMoveViewModel", "No connected nodes for sync")
+                Log.w("ChessMoveViewModel", "No connected nodes for path $path")
                 return
             }
+            val bytes = if (payload.isEmpty()) ByteArray(0) else payload.toByteArray(Charsets.UTF_8)
             nodes.forEach { node ->
                 Wearable.getMessageClient(getApplication<Application>())
-                    .sendMessage(node.id, PATH_CHESS_SYNC, ByteArray(0))
+                    .sendMessage(node.id, path, bytes)
                     .await()
-                Log.d("ChessMoveViewModel", "Sync request sent to ${node.displayName}")
+                Log.d("ChessMoveViewModel", "Sent '$payload' to ${node.displayName} on $path")
             }
         } catch (e: Exception) {
-            Log.e("ChessMoveViewModel", "Sync request failed: ${e.message}")
+            Log.e("ChessMoveViewModel", "Failed to send on $path: ${e.message}")
         }
     }
 }
@@ -204,6 +203,8 @@ private val ColorFile = Color(0xFF1E3A5F)        // dark blue      – file keys
 private val ColorRank = Color(0xFF3D2B1F)        // dark brown     – rank keys
 private val ColorSpecial = Color(0xFF4A2C6B)     // purple         – special keys
 private val ColorAction = Color(0xFF8B0000)      // dark red        – backspace/clear
+private val ColorResign = Color(0xFF7B0000)      // deep red        – resign
+private val ColorDraw   = Color(0xFF4E6E00)      // dark olive      – draw offer
 private val ColorSend = Color(0xFF1565C0)        // blue            – send
 private val ColorSync = Color(0xFF1A5276)        // dark navy       – sync
 private val ColorText = Color(0xFFEEEEEE)
@@ -357,6 +358,28 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
                             color = ColorAction,
                             modifier = Modifier.weight(1f)
                         ) { viewModel.onClear() }
+                    }
+                }
+
+                // Row – resign / draw offer
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+                    ) {
+                        WideChipButton(
+                            label = "RESIGN",
+                            color = ColorResign,
+                            modifier = Modifier.weight(1f)
+                        ) { viewModel.onResign() }
+
+                        WideChipButton(
+                            label = "DRAW",
+                            color = ColorDraw,
+                            modifier = Modifier.weight(1f)
+                        ) { viewModel.onOfferDraw() }
                     }
                 }
 

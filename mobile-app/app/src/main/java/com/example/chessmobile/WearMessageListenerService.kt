@@ -17,6 +17,8 @@ class WearMessageListenerService : WearableListenerService() {
         private const val PATH_CHESS_STATUS_REQUEST = "/chess/status"
         private const val PATH_CHESS_SYNC = "/chess/sync"
         private const val PATH_CHESS_SYNC_RESPONSE = "/chess/sync/response"
+        private const val PATH_CHESS_RESIGN = "/chess/resign"
+        private const val PATH_CHESS_DRAW_OFFER = "/chess/draw/offer"
     }
 
     override fun onPeerConnected(peer: com.google.android.gms.wearable.Node) {
@@ -32,6 +34,8 @@ class WearMessageListenerService : WearableListenerService() {
             PATH_CHESS_MOVE -> handleMove(messageEvent)
             PATH_CHESS_STATUS_REQUEST -> handleStatusRequest(messageEvent)
             PATH_CHESS_SYNC -> handleSyncRequest(messageEvent)
+            PATH_CHESS_RESIGN -> handleResign()
+            PATH_CHESS_DRAW_OFFER -> handleDrawOffer()
             else -> Log.w(TAG, "Unknown path: ${messageEvent.path}")
         }
     }
@@ -86,6 +90,26 @@ class WearMessageListenerService : WearableListenerService() {
                     )
             }
         }
+    }
+
+    private fun handleResign() {
+        val provider = MoveRepository.activeProvider.value
+        if (provider == null) {
+            Log.w(TAG, "Resign received but no active provider")
+            return
+        }
+        Log.d(TAG, "Player resigned")
+        provider.onResign(this)
+    }
+
+    private fun handleDrawOffer() {
+        val provider = MoveRepository.activeProvider.value
+        if (provider == null) {
+            Log.w(TAG, "Draw offer received but no active provider")
+            return
+        }
+        Log.d(TAG, "Player offered/accepted draw")
+        provider.onDrawOffer(this)
     }
 
     private fun handleStatusRequest(event: MessageEvent) {

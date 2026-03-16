@@ -328,6 +328,7 @@ fun LichessConfigScreen(
     val levels = listOf(3 to "Easy", 5 to "Medium", 7 to "Hard")
     var selectedLevel by remember { mutableStateOf(3) }
     var colorChoice by remember { mutableStateOf(ColorChoice.WHITE) }
+    var timeControl by remember { mutableStateOf(TimeControl.TEN_MIN) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Lichess — Setup", style = MaterialTheme.typography.titleMedium)
@@ -406,6 +407,28 @@ fun LichessConfigScreen(
             }
         }
 
+        // Time control
+        Text("Time format:", style = MaterialTheme.typography.bodyMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TimeControl.entries.forEach { tc ->
+                val selected = timeControl == tc
+                if (selected) {
+                    Button(
+                        onClick = { timeControl = tc },
+                        modifier = Modifier.weight(1f)
+                    ) { Text(tc.label) }
+                } else {
+                    OutlinedButton(
+                        onClick = { timeControl = tc },
+                        modifier = Modifier.weight(1f)
+                    ) { Text(tc.label) }
+                }
+            }
+        }
+
         // Color choice
         Text("Your color:", style = MaterialTheme.typography.bodyMedium)
         Row(
@@ -438,7 +461,7 @@ fun LichessConfigScreen(
                 Text("Back")
             }
             Button(
-                onClick = { onStart(ProviderConfig.Lichess(selectedLevel, colorChoice)) },
+                onClick = { onStart(ProviderConfig.Lichess(selectedLevel, colorChoice, timeControl)) },
                 enabled = apiKeySaved,
                 modifier = Modifier.weight(1f)
             ) {
