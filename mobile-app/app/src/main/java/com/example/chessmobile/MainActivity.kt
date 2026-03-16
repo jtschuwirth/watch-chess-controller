@@ -19,13 +19,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.android.gms.wearable.Wearable
 
-enum class AppScreen { PROVIDER_SELECTION, PROVIDER_CONFIG, IN_GAME }
+enum class AppScreen { PROVIDER_SELECTION, PROVIDER_CONFIG, IN_GAME, GAME_RESULT }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,15 +61,23 @@ fun ChessMobileScreen(onOpenAccessibilitySettings: () -> Unit) {
     val lastStatus by MoveRepository.lastStatus.collectAsStateWithLifecycle()
     val watchConnected by MoveRepository.watchConnected.collectAsStateWithLifecycle()
     val gameInfo by MoveRepository.gameInfo.collectAsStateWithLifecycle()
+    val gameResult by MoveRepository.gameResult.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
 
     var currentScreen by remember { mutableStateOf(AppScreen.PROVIDER_SELECTION) }
     var selectedProvider by remember { mutableStateOf<GameProvider?>(null) }
 
-    // If game was ended externally, return to selection
+    // When Lichess ends the game with a result, move to the result screen
+    LaunchedEffect(gameResult) {
+        if (gameResult != null && currentScreen == AppScreen.IN_GAME) {
+            currentScreen = AppScreen.GAME_RESULT
+        }
+    }
+
+    // If game was ended externally (no result), return to selection
     LaunchedEffect(gameInfo) {
-        if (gameInfo == null && currentScreen == AppScreen.IN_GAME) {
+        if (gameInfo == null && gameResult == null && currentScreen == AppScreen.IN_GAME) {
             currentScreen = AppScreen.PROVIDER_SELECTION
         }
     }
@@ -114,15 +126,30 @@ fun ChessMobileScreen(onOpenAccessibilitySettings: () -> Unit) {
                             },
                             onBack = { currentScreen = AppScreen.PROVIDER_SELECTION }
                         )
-                        is LichessProvider -> LichessConfigScreen(
-                            onStart = { config ->
-                                MoveRepository.startGame(config, LichessProvider, context)
-                                currentScreen = AppScreen.IN_GAME
-                            },
-                            onBack = { currentScreen = AppScreen.PROVIDER_SELECTION }
-                        )
+                        is LichessProvider -> {
+                            val provider = selectedProvider as LichessProvider
+                            LichessConfigScreen(
+                                onStart = { config ->
+                                    MoveRepository.startGame(config, provider, context)
+                                    currentScreen = AppScreen.IN_GAME
+                                },
+                                onBack = { currentScreen = AppScreen.PROVIDER_SELECTION }
+                            )
+                        }
                         else -> { currentScreen = AppScreen.PROVIDER_SELECTION }
                     }
+                }
+
+                AppScreen.GAME_RESULT -> {
+                    GameResultScreen(
+                        result = gameResult ?: "Game over.",
+                        moves = moves,
+                        onNewGame = {
+                            MoveRepository.clearGameResult(context)
+                            currentScreen = AppScreen.PROVIDER_SELECTION
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
                 }
 
                 AppScreen.IN_GAME -> {
@@ -213,28 +240,12 @@ fun ProviderSelectionScreen(onProviderSelected: (GameProvider) -> Unit) {
         // Lichess card
         Card(
             modifier = Modifier.fillMaxWidth(),
-            onClick = { onProviderSelected(LichessProvider) }
+            onClick = { onProviderSelected(LichessProvider()) }
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text("Lichess", style = MaterialTheme.typography.titleSmall)
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = MaterialTheme.shapes.small
-                    ) {
-                        Text(
-                            "Coming soon",
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                    }
-                }
+                Text("Lichess", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Play against a Lichess bot.",
+                    "Play against a Lichess Stockfish bot via the Board API.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -302,44 +313,123 @@ fun LichessConfigScreen(
     onStart: (ProviderConfig.Lichess) -> Unit,
     onBack: () -> Unit
 ) {
-    val difficulties = listOf(1500, 1750, 2000)
-    var selectedDifficulty by remember { mutableStateOf(1500) }
+    val context = LocalContext.current
+
+    // API key state — pre-populate from secure storage
+    var apiKeyInput by remember {
+        mutableStateOf(LichessApiKeyManager.getApiKey(context) ?: "")
+    }
+    var apiKeyVisible by remember { mutableStateOf(false) }
+    var apiKeySaved by remember {
+        mutableStateOf(LichessApiKeyManager.hasApiKey(context))
+    }
+
+    // Game options
+    val levels = listOf(3 to "Easy", 5 to "Medium", 7 to "Hard")
+    var selectedLevel by remember { mutableStateOf(3) }
+    var colorChoice by remember { mutableStateOf(ColorChoice.WHITE) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Lichess — Setup", style = MaterialTheme.typography.titleMedium)
 
+        // API key section
+        Text("API Token:", style = MaterialTheme.typography.bodyMedium)
+        OutlinedTextField(
+            value = apiKeyInput,
+            onValueChange = { apiKeyInput = it; apiKeySaved = false },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Lichess personal access token") },
+            singleLine = true,
+            visualTransformation = if (apiKeyVisible)
+                VisualTransformation.None
+            else
+                PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            trailingIcon = {
+                TextButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                    Text(if (apiKeyVisible) "Hide" else "Show",
+                        style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = {
+                    LichessApiKeyManager.saveApiKey(context, apiKeyInput)
+                    apiKeySaved = true
+                },
+                enabled = apiKeyInput.isNotBlank(),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Save Token")
+            }
+            if (apiKeySaved) {
+                Text(
+                    "Saved",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF2E7D32)
+                )
+            }
+        }
         Text(
-            "Note: Lichess integration is not yet implemented. This is a stub.",
+            "Generate a token at lichess.org → Settings → API access tokens. " +
+            "No special scopes are required for the Board API.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Text("Bot difficulty:", style = MaterialTheme.typography.bodyMedium)
+        HorizontalDivider()
 
+        // Bot difficulty
+        Text("Bot difficulty:", style = MaterialTheme.typography.bodyMedium)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            difficulties.forEach { difficulty ->
-                val selected = selectedDifficulty == difficulty
+            levels.forEach { (level, label) ->
+                val selected = selectedLevel == level
                 if (selected) {
                     Button(
-                        onClick = { selectedDifficulty = difficulty },
+                        onClick = { selectedLevel = level },
                         modifier = Modifier.weight(1f)
-                    ) {
-                        Text("$difficulty")
-                    }
+                    ) { Text(label) }
                 } else {
                     OutlinedButton(
-                        onClick = { selectedDifficulty = difficulty },
+                        onClick = { selectedLevel = level },
                         modifier = Modifier.weight(1f)
-                    ) {
-                        Text("$difficulty")
-                    }
+                    ) { Text(label) }
                 }
             }
         }
 
+        // Color choice
+        Text("Your color:", style = MaterialTheme.typography.bodyMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ColorChoice.entries.forEach { choice ->
+                val label = choice.name.lowercase().replaceFirstChar { it.uppercase() }
+                val selected = colorChoice == choice
+                if (selected) {
+                    Button(
+                        onClick = { colorChoice = choice },
+                        modifier = Modifier.weight(1f)
+                    ) { Text(label) }
+                } else {
+                    OutlinedButton(
+                        onClick = { colorChoice = choice },
+                        modifier = Modifier.weight(1f)
+                    ) { Text(label) }
+                }
+            }
+        }
+
+        // Action buttons
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -348,11 +438,19 @@ fun LichessConfigScreen(
                 Text("Back")
             }
             Button(
-                onClick = { onStart(ProviderConfig.Lichess(selectedDifficulty)) },
+                onClick = { onStart(ProviderConfig.Lichess(selectedLevel, colorChoice)) },
+                enabled = apiKeySaved,
                 modifier = Modifier.weight(1f)
             ) {
                 Text("Start Game")
             }
+        }
+        if (!apiKeySaved && apiKeyInput.isBlank()) {
+            Text(
+                "Save your API token to enable Start Game.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
         }
     }
 }
@@ -535,6 +633,66 @@ fun WatchConnectionCard(connected: Boolean) {
                     color = contentColor.copy(alpha = 0.85f)
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun GameResultScreen(
+    result: String,
+    moves: List<MoveEntry>,
+    onNewGame: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // Result banner
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Game Over",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+                Text(
+                    result,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+                Button(
+                    onClick = onNewGame,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Back to Home")
+                }
+            }
+        }
+
+        // Move log
+        if (moves.isNotEmpty()) {
+            MoveLogHeader()
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                items(moves) { entry -> MoveRow(entry) }
+            }
+        } else {
+            Spacer(modifier = Modifier.weight(1f))
         }
     }
 }

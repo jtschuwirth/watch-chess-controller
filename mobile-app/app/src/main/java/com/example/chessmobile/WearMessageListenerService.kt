@@ -42,34 +42,50 @@ class WearMessageListenerService : WearableListenerService() {
 
         if (!isValidNotation(move)) {
             Log.w(TAG, "Invalid notation rejected: '$move'")
-            sendErrorToWatch(event.sourceNodeId, "Invalid notation: $move")
+            sendErrorToWatch(event.sourceNodeId, "Invalid: $move")
             return
         }
 
         MoveRepository.addMove(move)
 
-        // Ask the active provider if it wants to generate an opponent move
-        val opponentMove = MoveRepository.activeProvider.value?.generateOpponentMove()
-        val opponentMoveSent = opponentMove != null
-        if (opponentMove != null) {
-            MoveRepository.setLastMoveResponse(opponentMove)
-            sendMessage(event.sourceNodeId, "/chess/move", opponentMove)
-            Log.d(TAG, "Provider opponent move sent: $opponentMove")
+        val provider = MoveRepository.activeProvider.value
+        if (provider == null) {
+            MoveRepository.updateLastMoveStatus(MoveStatus.FAILED, "No active game provider.")
+            sendErrorToWatch(event.sourceNodeId, "No game")
+            return
         }
 
-        // Delegate to the accessibility service for execution
-        ChessAccessibilityService.instance?.executeMove(move)
-            ?: run {
-                Log.w(TAG, "Accessibility service not running")
-                MoveRepository.updateLastMoveStatus(
-                    MoveStatus.FAILED,
-                    "Accessibility service is not enabled. Please enable it in Settings."
-                )
-                // Only notify the watch if no response was already sent
-                if (!opponentMoveSent) {
-                    sendErrorToWatch(event.sourceNodeId, "Svc off")
-                }
+        // Ask the provider to handle the move. For Lichess this is async (HTTP call);
+        // for RandomMoves it resolves immediately.
+        provider.onPlayerMove(move, this) { opponentMove, error ->
+            if (error != null) {
+                Log.w(TAG, "Provider rejected move '$move': $error")
+                // Remove the optimistically-added entry so the move number is reused on retry
+                MoveRepository.removeLastMove()
+                MoveRepository.setLastStatus("Invalid move: $move")
+                sendErrorToWatch(event.sourceNodeId, error.take(12))
+                return@onPlayerMove
             }
+
+            // For Lichess: move accepted, opponent reply comes via stream (opponentMove == null here).
+            // For RandomMoves: opponentMove is the immediate random reply.
+            if (opponentMove != null) {
+                MoveRepository.setLastMoveResponse(opponentMove)
+                sendMessage(event.sourceNodeId, "/chess/move", opponentMove)
+            }
+
+            if (provider is LichessProvider) {
+                // Status is set to EXECUTED here; the stream will add the response when the bot plays.
+                MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
+            } else {
+                // For non-Lichess providers, execute the move via accessibility service.
+                ChessAccessibilityService.instance?.executeMove(move)
+                    ?: MoveRepository.updateLastMoveStatus(
+                        MoveStatus.FAILED,
+                        "Accessibility service is not enabled. Enable it in Settings."
+                    )
+            }
+        }
     }
 
     private fun handleStatusRequest(event: MessageEvent) {

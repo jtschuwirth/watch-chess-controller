@@ -95,8 +95,17 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
                 _uiState.update { it.applySync(syncPayload) }
             }
             PATH_CHESS_GAME_END -> {
-                Log.d("ChessMoveViewModel", "Game ended by phone")
-                _uiState.update { MoveInputState() }
+                val payload = String(event.data, Charsets.UTF_8).trim()
+                if (payload.isBlank()) {
+                    // Manual end from phone — reset immediately
+                    Log.d("ChessMoveViewModel", "Game ended by phone (manual)")
+                    _uiState.update { MoveInputState() }
+                } else {
+                    // Game ended with a result — show game-over screen
+                    Log.d("ChessMoveViewModel", "Game ended with result: $payload")
+                    _uiState.update { it.copy(playerColor = null, gameResult = payload) }
+                    wakeScreen()
+                }
             }
         }
     }
@@ -113,6 +122,7 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
     fun onAppend(char: String) = _uiState.update { it.append(char) }
     fun onBackspace() = _uiState.update { it.backspace() }
     fun onClear() = _uiState.update { it.clear() }
+    fun onDismissResult() = _uiState.update { MoveInputState() }
 
     fun onSend() {
         val move = _uiState.value.currentInput.trim()
@@ -201,7 +211,6 @@ private val ColorInputBg = Color(0xFF111111)
 private val ColorHistory = Color(0xFF252525)
 private val ColorWhiteMove = Color(0xFFEEEEEE)
 private val ColorBlackMove = Color(0xFFAAAAAA)
-private val ColorErrorMove = Color(0xFFFF6B6B)
 private val ColorPending = Color(0xFF555555)
 private val ColorStatusActive = Color(0xFF1B5E20)    // dark green – game active
 private val ColorStatusIdle = Color(0xFF212121)      // near-black – no game
@@ -230,10 +239,21 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
         ) {
             // ---- Game status banner ----
             item {
-                GameStatusBanner(playerColor = state.playerColor, gameActive = state.gameActive)
+                GameStatusBanner(
+                    playerColor = state.playerColor,
+                    gameActive = state.gameActive,
+                    gameOver = state.gameOver
+                )
             }
 
-            if (state.gameActive) {
+            if (state.gameOver) {
+                item {
+                    GameOverContent(
+                        result = state.gameResult!!,
+                        onDismiss = viewModel::onDismissResult
+                    )
+                }
+            } else if (state.gameActive) {
                 // ---- Turn / last-move status ----
                 item {
                     TurnStatusBar(isMyTurn = state.isMyTurn, lastMove = state.lastMove)
@@ -365,10 +385,17 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
 // Game status banner
 // ---------------------------------------------------------------------------
 
+private val ColorStatusGameOver = Color(0xFF4A148C)   // deep purple – game over
+
 @Composable
-private fun GameStatusBanner(playerColor: String?, gameActive: Boolean) {
-    val bgColor = if (gameActive) ColorStatusActive else ColorStatusIdle
+private fun GameStatusBanner(playerColor: String?, gameActive: Boolean, gameOver: Boolean = false) {
+    val bgColor = when {
+        gameOver -> ColorStatusGameOver
+        gameActive -> ColorStatusActive
+        else -> ColorStatusIdle
+    }
     val text = when {
+        gameOver -> "Game Over"
         playerColor == "W" -> "Game active \u25A1 White"   // □ White
         playerColor == "B" -> "Game active \u25A0 Black"   // ■ Black
         else -> "No game active"
@@ -383,11 +410,43 @@ private fun GameStatusBanner(playerColor: String?, gameActive: Boolean) {
     ) {
         Text(
             text = text,
-            color = if (gameActive) Color.White else ColorText.copy(alpha = 0.45f),
+            color = if (gameActive || gameOver) Color.White else ColorText.copy(alpha = 0.45f),
             fontSize = 12.sp,
-            fontWeight = if (gameActive) FontWeight.SemiBold else FontWeight.Normal,
+            fontWeight = if (gameActive || gameOver) FontWeight.SemiBold else FontWeight.Normal,
             textAlign = TextAlign.Center,
             maxLines = 1
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Game over content (result message + back-to-home button)
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun GameOverContent(result: String, onDismiss: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = result,
+            color = ColorText,
+            fontSize = 13.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(ColorSurface, shape = RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        )
+        WideChipButton(
+            label = "Back to Home",
+            color = ColorStatusActive,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onDismiss
         )
     }
 }
@@ -596,7 +655,6 @@ private fun MoveHistoryHeader(playerColor: String? = null) {
 @Composable
 private fun MoveHistoryItem(pair: MovePair) {
     val blackColor = when {
-        pair.isError -> ColorErrorMove
         pair.black == null -> ColorPending
         else -> ColorBlackMove
     }

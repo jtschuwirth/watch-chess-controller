@@ -6,8 +6,7 @@ package com.watchchess.controller.model
 data class MovePair(
     val number: Int,
     val white: String,
-    val black: String? = null,
-    val isError: Boolean = false
+    val black: String? = null
 )
 
 /**
@@ -16,14 +15,17 @@ data class MovePair(
  * @param currentInput The move string currently being built by the user (e.g., "Ne").
  * @param moveHistory  The ordered list of move pairs that have been sent/responded to.
  * @param playerColor  The player's piece color synced from the phone: "W", "B", or null if unknown.
+ * @param gameResult   Non-null when the game has ended; contains the human-readable result message.
  */
 data class MoveInputState(
     val currentInput: String = "",
     val moveHistory: List<MovePair> = emptyList(),
-    val playerColor: String? = null
+    val playerColor: String? = null,
+    val gameResult: String? = null
 ) {
     val hasInput: Boolean get() = currentInput.isNotEmpty()
-    val gameActive: Boolean get() = playerColor == "W" || playerColor == "B"
+    val gameActive: Boolean get() = (playerColor == "W" || playerColor == "B") && gameResult == null
+    val gameOver: Boolean get() = gameResult != null
 
     /** The most recent move played (by either side), or null if no moves yet. */
     val lastMove: String? get() {
@@ -93,19 +95,30 @@ data class MoveInputState(
      * - Error (any color): fill black column of last pair with the error text.
      */
     fun receiveResponse(response: String, isError: Boolean = false): MoveInputState {
-        return if (playerColor == "B" && !isError) {
-            // Opponent's white move arrives → new row, black column pending user's reply
-            copy(
-                moveHistory = moveHistory + MovePair(
-                    number = moveHistory.size + 1,
-                    white = response
+        return when {
+            isError -> {
+                // The move was rejected — undo the optimistic add so the move number is
+                // reused when the user retries with a corrected move.
+                if (moveHistory.isEmpty()) this
+                else copy(moveHistory = moveHistory.dropLast(1))
+            }
+            playerColor == "B" -> {
+                // Opponent's white move arrives → new row, black column pending user's reply
+                copy(
+                    moveHistory = moveHistory + MovePair(
+                        number = moveHistory.size + 1,
+                        white = response
+                    )
                 )
-            )
-        } else {
-            // White player's flow, or an error: fill black column of last pair
-            if (moveHistory.isEmpty()) return this
-            val updated = moveHistory.last().copy(black = response, isError = isError)
-            copy(moveHistory = moveHistory.dropLast(1) + updated)
+            }
+            else -> {
+                // White player's flow: fill black column of last pair with opponent response
+                if (moveHistory.isEmpty()) this
+                else {
+                    val updated = moveHistory.last().copy(black = response)
+                    copy(moveHistory = moveHistory.dropLast(1) + updated)
+                }
+            }
         }
     }
 

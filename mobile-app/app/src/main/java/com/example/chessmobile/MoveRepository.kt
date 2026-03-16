@@ -50,6 +50,9 @@ object MoveRepository {
     private val _gameInfo = MutableStateFlow<GameInfo?>(null)
     val gameInfo: StateFlow<GameInfo?> = _gameInfo.asStateFlow()
 
+    private val _gameResult = MutableStateFlow<String?>(null)
+    val gameResult: StateFlow<String?> = _gameResult.asStateFlow()
+
     fun setWatchConnected(connected: Boolean) {
         _watchConnected.value = connected
     }
@@ -57,7 +60,9 @@ object MoveRepository {
     fun startGame(config: ProviderConfig, provider: GameProvider, context: Context) {
         val playerColor = when (config) {
             is ProviderConfig.RandomMoves -> resolveColor(config.color)
-            is ProviderConfig.Lichess -> ChessColor.WHITE
+            // For Lichess use the requested color as a placeholder; updateGameColor() will
+            // correct it once the Lichess API responds (relevant when color=RANDOM).
+            is ProviderConfig.Lichess -> resolveColor(config.color)
         }
         _activeProvider.value = provider
         _gameInfo.value = GameInfo(playerColor, provider.name)
@@ -79,11 +84,81 @@ object MoveRepository {
         _activeProvider.value = null
         _gameInfo.value = null
         _lastStatus.value = null
+        _gameResult.value = null
         // Tell the watch the game is over so it hides the keyboard and resets its state
         Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
             nodes.forEach { node ->
                 Wearable.getMessageClient(context)
                     .sendMessage(node.id, "/chess/game/end", ByteArray(0))
+            }
+        }
+    }
+
+    /**
+     * Called when Lichess ends the game (checkmate, resign, draw, timeout, etc.).
+     * Stops the active provider, stores the human-readable result for display,
+     * and pushes the result to the watch. [_gameInfo] is intentionally kept so the
+     * phone can show the result screen before the user dismisses it.
+     */
+    fun endGameWithResult(status: String, winner: String?, context: Context) {
+        val resultMsg = formatGameResult(status, winner)
+        _activeProvider.value?.onGameEnd()
+        _activeProvider.value = null
+        _gameResult.value = resultMsg
+        _lastStatus.value = resultMsg
+        // _gameInfo is left intact — cleared when the user dismisses the result screen
+        val payload = resultMsg.toByteArray(Charsets.UTF_8)
+        Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
+            nodes.forEach { node ->
+                Wearable.getMessageClient(context)
+                    .sendMessage(node.id, "/chess/game/end", payload)
+            }
+        }
+    }
+
+    /** Clears the game result and all game state after the user dismisses the result screen. */
+    fun clearGameResult(context: Context) {
+        _gameResult.value = null
+        _gameInfo.value = null
+        _lastStatus.value = null
+        _moves.value = emptyList()
+    }
+
+    private fun formatGameResult(status: String, winner: String?): String {
+        val winnerStr = when (winner) {
+            "white" -> "White"
+            "black" -> "Black"
+            else -> null
+        }
+        return when (status) {
+            "mate"       -> if (winnerStr != null) "Checkmate! $winnerStr wins." else "Checkmate!"
+            "resign"     -> if (winnerStr != null) "$winnerStr wins by resignation." else "Resignation."
+            "draw"       -> "Draw."
+            "stalemate"  -> "Stalemate — Draw."
+            "timeout",
+            "outoftime"  -> if (winnerStr != null) "$winnerStr wins on time." else "Draw on time."
+            "aborted"    -> "Game aborted."
+            "cheat"      -> if (winnerStr != null) "$winnerStr wins (cheat detected)." else "Cheat detected."
+            "noStart"    -> "Game did not start."
+            "finish"     -> if (winnerStr != null) "$winnerStr wins." else "Game over."
+            else         -> if (winnerStr != null) "$winnerStr wins." else "Game over."
+        }
+    }
+
+    /**
+     * Updates the player's color after a Lichess game start confirms the actual color
+     * (relevant when ColorChoice.RANDOM was selected). Notifies the watch of the change.
+     */
+    fun updateGameColor(color: ChessColor, context: Context) {
+        val current = _gameInfo.value ?: return
+        if (current.playerColor == color) return
+        _gameInfo.value = current.copy(playerColor = color)
+        _lastStatus.value = "You are playing as ${color.name.lowercase()}."
+        val colorChar = if (color == ChessColor.WHITE) "W" else "B"
+        Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
+            nodes.forEach { node ->
+                Wearable.getMessageClient(context)
+                    .sendMessage(node.id, "/chess/game/start", colorChar.toByteArray(Charsets.UTF_8))
             }
         }
     }
@@ -127,5 +202,14 @@ object MoveRepository {
             MoveStatus.FAILED -> "Move execution failed."
             MoveStatus.PENDING -> null
         }
+    }
+
+    /** Removes the last move entry (used to undo an optimistic add when a move is rejected). */
+    fun removeLastMove() {
+        _moves.update { list -> if (list.isEmpty()) list else list.dropLast(1) }
+    }
+
+    fun setLastStatus(message: String) {
+        _lastStatus.value = message
     }
 }
