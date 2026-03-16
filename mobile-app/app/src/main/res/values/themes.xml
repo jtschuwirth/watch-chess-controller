@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base theme for the app — Compose handles all visual theming,
+         so we just need a windowless, action-bar-free shell here. -->
+    <style name="Theme.ChessMobile" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

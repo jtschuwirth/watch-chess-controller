@@ -15,12 +15,23 @@ class WearMessageListenerService : WearableListenerService() {
         private const val TAG = "WearMsgListener"
         private const val PATH_CHESS_MOVE = "/chess/move"
         private const val PATH_CHESS_STATUS_REQUEST = "/chess/status"
+        private const val PATH_CHESS_SYNC = "/chess/sync"
+        private const val PATH_CHESS_SYNC_RESPONSE = "/chess/sync/response"
+    }
+
+    override fun onPeerConnected(peer: com.google.android.gms.wearable.Node) {
+        MoveRepository.setWatchConnected(true)
+    }
+
+    override fun onPeerDisconnected(peer: com.google.android.gms.wearable.Node) {
+        MoveRepository.setWatchConnected(false)
     }
 
     override fun onMessageReceived(messageEvent: MessageEvent) {
         when (messageEvent.path) {
             PATH_CHESS_MOVE -> handleMove(messageEvent)
             PATH_CHESS_STATUS_REQUEST -> handleStatusRequest(messageEvent)
+            PATH_CHESS_SYNC -> handleSyncRequest(messageEvent)
             else -> Log.w(TAG, "Unknown path: ${messageEvent.path}")
         }
     }
@@ -37,6 +48,15 @@ class WearMessageListenerService : WearableListenerService() {
 
         MoveRepository.addMove(move)
 
+        // Ask the active provider if it wants to generate an opponent move
+        val opponentMove = MoveRepository.activeProvider.value?.generateOpponentMove()
+        val opponentMoveSent = opponentMove != null
+        if (opponentMove != null) {
+            MoveRepository.setLastMoveResponse(opponentMove)
+            sendMessage(event.sourceNodeId, "/chess/move", opponentMove)
+            Log.d(TAG, "Provider opponent move sent: $opponentMove")
+        }
+
         // Delegate to the accessibility service for execution
         ChessAccessibilityService.instance?.executeMove(move)
             ?: run {
@@ -45,7 +65,10 @@ class WearMessageListenerService : WearableListenerService() {
                     MoveStatus.FAILED,
                     "Accessibility service is not enabled. Please enable it in Settings."
                 )
-                sendErrorToWatch(event.sourceNodeId, "Accessibility service not active")
+                // Only notify the watch if no response was already sent
+                if (!opponentMoveSent) {
+                    sendErrorToWatch(event.sourceNodeId, "Svc off")
+                }
             }
     }
 
@@ -55,8 +78,27 @@ class WearMessageListenerService : WearableListenerService() {
         sendMessage(event.sourceNodeId, "/chess/status/response", payload)
     }
 
+    private fun handleSyncRequest(event: MessageEvent) {
+        val gameInfo = MoveRepository.gameInfo.value
+        val moves = MoveRepository.moves.value
+
+        val colorChar = when (gameInfo?.playerColor) {
+            ChessColor.WHITE -> "W"
+            ChessColor.BLACK -> "B"
+            null -> "?"
+        }
+
+        val moveParts = moves.joinToString("|") { entry ->
+            "${entry.move}:${entry.response ?: ""}"
+        }
+
+        val payload = if (moveParts.isEmpty()) colorChar else "$colorChar|$moveParts"
+        sendMessage(event.sourceNodeId, PATH_CHESS_SYNC_RESPONSE, payload)
+        Log.d(TAG, "Sync response sent: $payload")
+    }
+
     private fun sendErrorToWatch(nodeId: String, error: String) {
-        sendMessage(nodeId, "/chess/error", error)
+        sendMessage(nodeId, "/chess/error", error.take(12))
     }
 
     private fun sendMessage(nodeId: String, path: String, payload: String) {

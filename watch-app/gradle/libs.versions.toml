@@ -8,6 +8,7 @@ coreKtx = "1.13.1"
 lifecycleRuntime = "2.8.7"
 coroutines = "1.9.0"
 viewmodelCompose = "2.8.7"
+playServicesWearable = "18.2.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -17,7 +18,9 @@ androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", versi
 androidx-wear-compose-material = { group = "androidx.wear.compose", name = "compose-material", version.ref = "wearCompose" }
 androidx-wear-compose-foundation = { group = "androidx.wear.compose", name = "compose-foundation", version.ref = "wearCompose" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
 androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "viewmodelCompose" }
+play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -7,7 +7,7 @@
     <application
         android:allowBackup="true"
         android:label="Chess Mobile"
-        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+        android:theme="@style/Theme.ChessMobile">
 
         <activity
             android:name=".MainActivity"

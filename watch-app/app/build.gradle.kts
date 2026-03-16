@@ -58,4 +58,8 @@ dependencies {
     // ViewModel + Coroutines
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+
+    // Wearable Data Layer (MessageClient)
+    implementation(libs.play.services.wearable)
 }
