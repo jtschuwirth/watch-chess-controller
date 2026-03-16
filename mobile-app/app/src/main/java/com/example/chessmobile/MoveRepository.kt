@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 enum class MoveStatus(val label: String) {
     PENDING("Pending"),
@@ -35,6 +37,14 @@ enum class ChessColor { WHITE, BLACK }
 data class GameInfo(val playerColor: ChessColor, val providerName: String)
 
 object MoveRepository {
+    val MOVE_REGEX = Regex(
+        """^(""" +
+        """O-O-O|O-O|""" +
+        """[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](=[QRBN])?|""" +
+        """[a-h][1-8](=[QRBN])?""" +
+        """)[+#]?$"""
+    )
+
     private val _moves = MutableStateFlow<List<MoveEntry>>(emptyList())
     val moves: StateFlow<List<MoveEntry>> = _moves.asStateFlow()
 
@@ -52,6 +62,15 @@ object MoveRepository {
 
     private val _gameResult = MutableStateFlow<String?>(null)
     val gameResult: StateFlow<String?> = _gameResult.asStateFlow()
+
+    private val _phoneInputError = MutableStateFlow<String?>(null)
+    val phoneInputError: StateFlow<String?> = _phoneInputError.asStateFlow()
+
+    private val _navigateToHome = MutableStateFlow(false)
+    val navigateToHome: StateFlow<Boolean> = _navigateToHome.asStateFlow()
+    fun clearNavigateToHome() { _navigateToHome.value = false }
+    fun setPhoneInputError(msg: String?) { _phoneInputError.value = msg }
+    fun clearPhoneInputError() { _phoneInputError.value = null }
 
     fun setWatchConnected(connected: Boolean) {
         _watchConnected.value = connected
@@ -122,6 +141,24 @@ object MoveRepository {
         _gameInfo.value = null
         _lastStatus.value = null
         _moves.value = emptyList()
+        // Notify watch to go home too
+        Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
+            nodes.forEach { node ->
+                Wearable.getMessageClient(context)
+                    .sendMessage(node.id, "/chess/home", ByteArray(0))
+            }
+        }
+    }
+
+    /** Called by WearMessageListenerService when the watch requests home navigation. */
+    fun requestNavigateHome() {
+        _activeProvider.value?.onGameEnd()
+        _activeProvider.value = null
+        _gameInfo.value = null
+        _gameResult.value = null
+        _lastStatus.value = null
+        _moves.value = emptyList()
+        _navigateToHome.value = true
     }
 
     private fun formatGameResult(status: String, winner: String?): String {
@@ -178,6 +215,40 @@ object MoveRepository {
         }
     }
 
+    /**
+     * Core move-processing logic shared by the watch path (WearMessageListenerService)
+     * and the phone keyboard path (MobileKeyboardViewModel).
+     * Returns an error string on rejection, or null on acceptance.
+     */
+    suspend fun processPlayerMove(move: String, context: Context): String? {
+        if (!MOVE_REGEX.matches(move)) return "Invalid: $move"
+
+        addMove(move)
+        val provider = activeProvider.value
+            ?: run { updateLastMoveStatus(MoveStatus.FAILED, "No active game provider."); return "No game" }
+
+        return suspendCancellableCoroutine { cont ->
+            provider.onPlayerMove(move, context) { opponentMove, error ->
+                if (error != null) {
+                    removeLastMove()
+                    setLastStatus("Invalid move: $move")
+                    cont.resume(error.take(12))
+                    return@onPlayerMove
+                }
+                if (opponentMove != null) {
+                    setLastMoveResponse(opponentMove)
+                }
+                if (provider is LichessProvider) {
+                    updateLastMoveStatus(MoveStatus.EXECUTED)
+                } else {
+                    ChessAccessibilityService.instance?.executeMove(move)
+                        ?: updateLastMoveStatus(MoveStatus.FAILED, "Accessibility service not enabled.")
+                }
+                cont.resume(null)
+            }
+        }
+    }
+
     fun addMove(move: String) {
         _moves.update { list ->
             list + MoveEntry(moveNumber = list.size + 1, move = move, status = MoveStatus.PENDING)
@@ -211,5 +282,26 @@ object MoveRepository {
 
     fun setLastStatus(message: String) {
         _lastStatus.value = message
+    }
+
+    /**
+     * Notifies the watch that the player submitted a move from the phone keyboard.
+     * Sends /chess/phone/move so the watch can add it to its history.
+     * Also forwards any immediate opponent response (e.g. from RandomMovesProvider)
+     * via the existing /chess/move path.
+     */
+    fun notifyWatchOfPhoneMove(move: String, context: Context) {
+        val opponentMove = moves.value.lastOrNull()
+            ?.takeIf { it.move == move }?.response
+        Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
+            nodes.forEach { node ->
+                Wearable.getMessageClient(context)
+                    .sendMessage(node.id, "/chess/phone/move", move.toByteArray(Charsets.UTF_8))
+                if (opponentMove != null) {
+                    Wearable.getMessageClient(context)
+                        .sendMessage(node.id, "/chess/move", opponentMove.toByteArray(Charsets.UTF_8))
+                }
+            }
+        }
     }
 }

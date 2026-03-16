@@ -3,6 +3,11 @@ package com.example.chessmobile
 import android.util.Log
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.WearableListenerService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * Receives chess move messages from the Galaxy Watch via Wearable MessageClient.
@@ -10,6 +15,13 @@ import com.google.android.gms.wearable.WearableListenerService
  * Payload: UTF-8 encoded algebraic notation string (e.g. "Ne4", "O-O", "exd5")
  */
 class WearMessageListenerService : WearableListenerService() {
+
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serviceScope.cancel()
+    }
 
     companion object {
         private const val TAG = "WearMsgListener"
@@ -19,6 +31,7 @@ class WearMessageListenerService : WearableListenerService() {
         private const val PATH_CHESS_SYNC_RESPONSE = "/chess/sync/response"
         private const val PATH_CHESS_RESIGN = "/chess/resign"
         private const val PATH_CHESS_DRAW_OFFER = "/chess/draw/offer"
+        private const val PATH_CHESS_HOME = "/chess/home"
     }
 
     override fun onPeerConnected(peer: com.google.android.gms.wearable.Node) {
@@ -36,6 +49,10 @@ class WearMessageListenerService : WearableListenerService() {
             PATH_CHESS_SYNC -> handleSyncRequest(messageEvent)
             PATH_CHESS_RESIGN -> handleResign()
             PATH_CHESS_DRAW_OFFER -> handleDrawOffer()
+            PATH_CHESS_HOME -> {
+                Log.d(TAG, "Home requested by watch")
+                MoveRepository.requestNavigateHome()
+            }
             else -> Log.w(TAG, "Unknown path: ${messageEvent.path}")
         }
     }
@@ -43,51 +60,17 @@ class WearMessageListenerService : WearableListenerService() {
     private fun handleMove(event: MessageEvent) {
         val move = String(event.data, Charsets.UTF_8).trim()
         Log.d(TAG, "Received move from watch: '$move' (node: ${event.sourceNodeId})")
-
-        if (!isValidNotation(move)) {
-            Log.w(TAG, "Invalid notation rejected: '$move'")
-            sendErrorToWatch(event.sourceNodeId, "Invalid: $move")
-            return
-        }
-
-        MoveRepository.addMove(move)
-
-        val provider = MoveRepository.activeProvider.value
-        if (provider == null) {
-            MoveRepository.updateLastMoveStatus(MoveStatus.FAILED, "No active game provider.")
-            sendErrorToWatch(event.sourceNodeId, "No game")
-            return
-        }
-
-        // Ask the provider to handle the move. For Lichess this is async (HTTP call);
-        // for RandomMoves it resolves immediately.
-        provider.onPlayerMove(move, this) { opponentMove, error ->
+        serviceScope.launch {
+            val error = MoveRepository.processPlayerMove(move, this@WearMessageListenerService)
             if (error != null) {
-                Log.w(TAG, "Provider rejected move '$move': $error")
-                // Remove the optimistically-added entry so the move number is reused on retry
-                MoveRepository.removeLastMove()
-                MoveRepository.setLastStatus("Invalid move: $move")
-                sendErrorToWatch(event.sourceNodeId, error.take(12))
-                return@onPlayerMove
-            }
-
-            // For Lichess: move accepted, opponent reply comes via stream (opponentMove == null here).
-            // For RandomMoves: opponentMove is the immediate random reply.
-            if (opponentMove != null) {
-                MoveRepository.setLastMoveResponse(opponentMove)
-                sendMessage(event.sourceNodeId, "/chess/move", opponentMove)
-            }
-
-            if (provider is LichessProvider) {
-                // Status is set to EXECUTED here; the stream will add the response when the bot plays.
-                MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
+                Log.w(TAG, "Move rejected: '$move' — $error")
+                sendErrorToWatch(event.sourceNodeId, error)
             } else {
-                // For non-Lichess providers, execute the move via accessibility service.
-                ChessAccessibilityService.instance?.executeMove(move)
-                    ?: MoveRepository.updateLastMoveStatus(
-                        MoveStatus.FAILED,
-                        "Accessibility service is not enabled. Enable it in Settings."
-                    )
+                // For RandomMoves the opponent response is set synchronously; forward it to the watch.
+                val response = MoveRepository.moves.value.lastOrNull()?.response
+                if (response != null) {
+                    sendMessage(event.sourceNodeId, "/chess/move", response)
+                }
             }
         }
     }
@@ -149,17 +132,4 @@ class WearMessageListenerService : WearableListenerService() {
             }
     }
 
-    // ---------------------------------------------------------------------------
-    // Algebraic notation validation
-    // ---------------------------------------------------------------------------
-
-    private val MOVE_REGEX = Regex(
-        """^(""" +
-        """O-O-O|O-O|""" +                          // castling
-        """[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](=[QRBN])?|""" + // piece/pawn moves
-        """[a-h][1-8](=[QRBN])?""" +                 // pawn push (simple)
-        """)[+#]?$"""
-    )
-
-    private fun isValidNotation(move: String): Boolean = MOVE_REGEX.matches(move)
 }

@@ -24,7 +24,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.android.gms.wearable.Wearable
 
 enum class AppScreen { PROVIDER_SELECTION, PROVIDER_CONFIG, IN_GAME, GAME_RESULT }
@@ -56,11 +59,16 @@ fun ChessMobileScreen() {
     val watchConnected by MoveRepository.watchConnected.collectAsStateWithLifecycle()
     val gameInfo by MoveRepository.gameInfo.collectAsStateWithLifecycle()
     val gameResult by MoveRepository.gameResult.collectAsStateWithLifecycle()
+    val phoneInputError by MoveRepository.phoneInputError.collectAsStateWithLifecycle()
+    val navigateToHome by MoveRepository.navigateToHome.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val keyboardViewModel: MobileKeyboardViewModel = viewModel()
+    val currentInput by keyboardViewModel.currentInput.collectAsStateWithLifecycle()
 
     var currentScreen by remember { mutableStateOf(AppScreen.PROVIDER_SELECTION) }
     var selectedProvider by remember { mutableStateOf<GameProvider?>(null) }
+    var showKeyboard by remember { mutableStateOf(false) }
 
     // When Lichess ends the game with a result, move to the result screen
     LaunchedEffect(gameResult) {
@@ -69,11 +77,24 @@ fun ChessMobileScreen() {
         }
     }
 
+    // If watch requested home navigation, reset to provider selection
+    LaunchedEffect(navigateToHome) {
+        if (navigateToHome) {
+            currentScreen = AppScreen.PROVIDER_SELECTION
+            MoveRepository.clearNavigateToHome()
+        }
+    }
+
     // If game was ended externally (no result), return to selection
     LaunchedEffect(gameInfo) {
         if (gameInfo == null && gameResult == null && currentScreen == AppScreen.IN_GAME) {
             currentScreen = AppScreen.PROVIDER_SELECTION
         }
+    }
+
+    // Close keyboard when leaving the in-game screen
+    LaunchedEffect(currentScreen) {
+        if (currentScreen != AppScreen.IN_GAME) showKeyboard = false
     }
 
     // Scroll to bottom when a new move arrives
@@ -95,8 +116,10 @@ fun ChessMobileScreen() {
         ) {
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Watch connection status card
-            WatchConnectionCard(watchConnected)
+            // Watch connection status card — hidden when the controller panel is open
+            if (!(showKeyboard && currentScreen == AppScreen.IN_GAME)) {
+                WatchConnectionCard(watchConnected)
+            }
 
             when (currentScreen) {
                 AppScreen.PROVIDER_SELECTION -> {
@@ -145,22 +168,17 @@ fun ChessMobileScreen() {
 
                 AppScreen.IN_GAME -> {
                     if (gameInfo != null) {
-                        // Game in progress banner
-                        GameInfoBanner(
-                            gameInfo = gameInfo!!,
-                            onEndGame = {
-                                MoveRepository.endGame(context)
-                                currentScreen = AppScreen.PROVIDER_SELECTION
-                            }
-                        )
+                        // Game in progress banner — hidden when controller panel is open
+                        if (!showKeyboard) {
+                            GameInfoBanner(gameInfo = gameInfo!!)
 
-                        // Last status message
-                        lastStatus?.let { status ->
-                            Text(
-                                text = status,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            lastStatus?.let { status ->
+                                Text(
+                                    text = status,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
                         // Move log header
@@ -175,7 +193,7 @@ fun ChessMobileScreen() {
                                 contentAlignment = Alignment.Center
                             ) {
                                 val hint = if (gameInfo!!.playerColor == ChessColor.WHITE)
-                                    "You go first — send your opening move from the watch."
+                                    "You go first — type your move below or send from the watch."
                                 else
                                     "Waiting for opponent's first move…"
                                 Text(
@@ -189,11 +207,57 @@ fun ChessMobileScreen() {
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(bottom = 8.dp),
                                 verticalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
                                 items(moves) { entry ->
                                     MoveRow(entry)
                                 }
+                            }
+                        }
+
+                        // Controller panel or open button
+                        if (showKeyboard) {
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            "Controller Panel",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        TextButton(onClick = { showKeyboard = false }) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Close panel"
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Close")
+                                        }
+                                    }
+                                    ChessKeyboardPanel(
+                                        currentInput = currentInput,
+                                        onAppend = keyboardViewModel::onAppend,
+                                        onBackspace = keyboardViewModel::onBackspace,
+                                        onClear = keyboardViewModel::onClear,
+                                        onSend = { keyboardViewModel.onSend() },
+                                        onResign = { keyboardViewModel.onResign() },
+                                        onDrawOffer = { keyboardViewModel.onDrawOffer() },
+                                        errorMessage = phoneInputError,
+                                        modifier = Modifier
+                                    )
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = { showKeyboard = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Controller Panel")
                             }
                         }
                     }
@@ -464,7 +528,7 @@ fun LichessConfigScreen(
 }
 
 @Composable
-fun GameInfoBanner(gameInfo: GameInfo, onEndGame: () -> Unit) {
+fun GameInfoBanner(gameInfo: GameInfo) {
     val playerColorName = gameInfo.playerColor.name.lowercase().replaceFirstChar { it.uppercase() }
     val opponentColorName = if (gameInfo.playerColor == ChessColor.WHITE) "Black" else "White"
     Card(
@@ -473,28 +537,21 @@ fun GameInfoBanner(gameInfo: GameInfo, onEndGame: () -> Unit) {
             containerColor = MaterialTheme.colorScheme.primaryContainer
         )
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
-            Column {
-                Text(
-                    "Game in Progress",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-                Text(
-                    "You: $playerColorName  •  Opponent: $opponentColorName  •  ${gameInfo.providerName}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                )
-            }
-            TextButton(onClick = onEndGame) {
-                Text("End Game")
-            }
+            Text(
+                "Game in Progress",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            Text(
+                "You: $playerColorName  •  Opponent: $opponentColorName  •  ${gameInfo.providerName}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+            )
         }
     }
 }

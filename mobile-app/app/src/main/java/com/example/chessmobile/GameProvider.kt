@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.HttpURLConnection
@@ -35,11 +36,12 @@ sealed class ProviderConfig {
  *
  * [onPlayerMove] is called when the player submits a move from the watch. It is responsible
  * for submitting the move to the backend (if any) and reporting back:
- *   - (opponentMove, null)  — move accepted; opponentMove is non-null when the response is
- *                             immediate (e.g. RandomMovesProvider), null when async (Lichess).
+ *   - (opponentMove, null)  — move accepted; opponentMove is non-null when the opponent reply
+ *                             is delivered inside the callback (e.g. RandomMovesProvider).
+ *                             null when the reply arrives via a separate channel (Lichess stream).
  *   - (null, errorMsg)      — move rejected; errorMsg describes the problem.
  *
- * For async providers like Lichess, the opponent's reply arrives later via the internal stream
+ * For async providers, the opponent's reply arrives later via the internal stream
  * and is pushed directly to MoveRepository + the watch.
  */
 interface GameProvider {
@@ -58,10 +60,16 @@ interface GameProvider {
 object RandomMovesProvider : GameProvider {
     override val name = "Random Moves"
 
+    private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     override fun onPlayerMove(san: String, context: Context, callback: (String?, String?) -> Unit) {
-        val file = ('a' + Random.nextInt(8))
-        val rank = Random.nextInt(8) + 1
-        callback("$file$rank", null)
+        scope.launch {
+            val delayMs = Random.nextLong(600L, 3001L)
+            delay(delayMs)
+            val file = ('a' + Random.nextInt(8))
+            val rank = Random.nextInt(8) + 1
+            callback("$file$rank", null)
+        }
     }
 
     override fun onGameStart(config: ProviderConfig, context: Context) {
@@ -70,6 +78,11 @@ object RandomMovesProvider : GameProvider {
         if (playerColor == ChessColor.BLACK) {
             MoveRepository.triggerRandomFirstMove(context)
         }
+    }
+
+    override fun onGameEnd() {
+        scope.cancel()
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     }
 
     override fun onResign(context: Context) {
@@ -130,16 +143,27 @@ class LichessProvider : GameProvider {
                     clockIncrement = cfg.timeControl.increment
                 )
                 gameId = result.gameId
-                playerColor = result.playerColor
+                // When the user explicitly chose a color, trust that choice over the API
+                // response (the API defaults to "white" when the field is absent, which
+                // would incorrectly override a BLACK selection). Only use the API-reported
+                // color when RANDOM was requested, since that's the only time the actual
+                // assignment is unknown until the server responds.
+                playerColor = if (cfg.color == ColorChoice.RANDOM) {
+                    result.playerColor
+                } else {
+                    resolveColor(cfg.color)
+                }
                 board.reset()
                 lastKnownMoveCount = 0
 
-                // If the API returned a different color than what was displayed (RANDOM case),
-                // update the repository and notify the watch.
+                // For RANDOM games, the API response tells us which color was assigned —
+                // update the repository and notify the watch if it differs from the placeholder.
                 val ctx = appContext ?: return@launch
-                val currentInfo = MoveRepository.gameInfo.value
-                if (currentInfo != null && currentInfo.playerColor != result.playerColor) {
-                    MoveRepository.updateGameColor(result.playerColor, ctx)
+                if (cfg.color == ColorChoice.RANDOM) {
+                    val currentInfo = MoveRepository.gameInfo.value
+                    if (currentInfo != null && currentInfo.playerColor != result.playerColor) {
+                        MoveRepository.updateGameColor(result.playerColor, ctx)
+                    }
                 }
 
                 // Start streaming game events

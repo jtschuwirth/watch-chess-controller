@@ -123,6 +123,38 @@ data class MoveInputState(
     }
 
     /**
+     * Inserts a player move that originated from the phone keyboard into the history,
+     * without touching [currentInput] (so in-progress watch input is preserved).
+     *
+     * Mirrors the history-update logic of [send] but operates on [move] directly.
+     */
+    fun addPlayerMove(move: String): MoveInputState {
+        return if (playerColor == "B") {
+            val lastPendingIdx = moveHistory.indexOfLast { it.black == null }
+            if (lastPendingIdx >= 0) {
+                val updated = moveHistory.toMutableList()
+                updated[lastPendingIdx] = updated[lastPendingIdx].copy(black = move)
+                copy(moveHistory = updated)
+            } else {
+                copy(
+                    moveHistory = moveHistory + MovePair(
+                        number = moveHistory.size + 1,
+                        white = "",
+                        black = move
+                    )
+                )
+            }
+        } else {
+            copy(
+                moveHistory = moveHistory + MovePair(
+                    number = moveHistory.size + 1,
+                    white = move
+                )
+            )
+        }
+    }
+
+    /**
      * Replaces the move history and player color from a sync payload sent by the phone.
      *
      * Payload format: "{colorChar}|{move1}:{response1}|{move2}:{response2}|..."

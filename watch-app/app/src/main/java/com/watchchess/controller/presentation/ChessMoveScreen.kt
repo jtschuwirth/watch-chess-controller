@@ -65,6 +65,8 @@ private const val PATH_CHESS_GAME_START = "/chess/game/start"
 private const val PATH_CHESS_GAME_END = "/chess/game/end"
 private const val PATH_CHESS_RESIGN = "/chess/resign"
 private const val PATH_CHESS_DRAW_OFFER = "/chess/draw/offer"
+private const val PATH_CHESS_HOME = "/chess/home"
+private const val PATH_CHESS_PHONE_MOVE = "/chess/phone/move"
 
 class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
     private val _uiState = MutableStateFlow(MoveInputState())
@@ -109,6 +111,15 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
                     wakeScreen()
                 }
             }
+            PATH_CHESS_HOME -> {
+                Log.d("ChessMoveViewModel", "Home requested by phone")
+                _uiState.update { MoveInputState() }
+            }
+            PATH_CHESS_PHONE_MOVE -> {
+                val move = String(event.data, Charsets.UTF_8).trim()
+                Log.d("ChessMoveViewModel", "Phone keyboard move: '$move'")
+                _uiState.update { it.addPlayerMove(move) }
+            }
         }
     }
 
@@ -124,7 +135,10 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
     fun onAppend(char: String) = _uiState.update { it.append(char) }
     fun onBackspace() = _uiState.update { it.backspace() }
     fun onClear() = _uiState.update { it.clear() }
-    fun onDismissResult() = _uiState.update { MoveInputState() }
+    fun onDismissResult() {
+        _uiState.update { MoveInputState() }
+        viewModelScope.launch { sendToPhone(PATH_CHESS_HOME, "") }
+    }
 
     fun onSend() {
         val move = _uiState.value.currentInput.trim()
@@ -413,6 +427,17 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
                     }
                     item { Spacer(modifier = Modifier.height(16.dp)) }
                 }
+            } else {
+                // ---- No active game: offer a sync in case the phone has one running ----
+                item {
+                    WideChipButton(
+                        label = "SYNC",
+                        color = ColorSync,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 32.dp)
+                    ) { viewModel.onSync() }
+                }
             }
         }
     }
@@ -435,7 +460,7 @@ private fun GameStatusBanner(playerColor: String?, gameActive: Boolean, gameOver
         gameOver -> "Game Over"
         playerColor == "W" -> "Game active \u25A1 White"   // □ White
         playerColor == "B" -> "Game active \u25A0 Black"   // ■ Black
-        else -> "No game active"
+        else -> "No active game"
     }
     Box(
         modifier = Modifier
