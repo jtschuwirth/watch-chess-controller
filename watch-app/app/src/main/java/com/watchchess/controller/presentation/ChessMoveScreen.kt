@@ -277,19 +277,37 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
                     )
                 }
 
-                // Row 2 – file letters
+                // Row 2a – file letters a–d
                 item {
                     ButtonRow(
-                        labels = listOf("a", "b", "c", "d", "e", "f", "g", "h"),
+                        labels = listOf("a", "b", "c", "d"),
                         color = ColorFile,
                         onTap = viewModel::onAppend
                     )
                 }
 
-                // Row 3 – rank numbers
+                // Row 2b – file letters e–h
                 item {
                     ButtonRow(
-                        labels = listOf("1", "2", "3", "4", "5", "6", "7", "8"),
+                        labels = listOf("e", "f", "g", "h"),
+                        color = ColorFile,
+                        onTap = viewModel::onAppend
+                    )
+                }
+
+                // Row 3a – rank numbers 1–4
+                item {
+                    ButtonRow(
+                        labels = listOf("1", "2", "3", "4"),
+                        color = ColorRank,
+                        onTap = viewModel::onAppend
+                    )
+                }
+
+                // Row 3b – rank numbers 5–8
+                item {
+                    ButtonRow(
+                        labels = listOf("5", "6", "7", "8"),
                         color = ColorRank,
                         onTap = viewModel::onAppend
                     )
@@ -325,20 +343,7 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
                         ) { viewModel.onAppend("O-O-O") }
                     }
                 }
-            }
 
-            // Row – sync (always visible)
-            item {
-                WideChipButton(
-                    label = "SYNC",
-                    color = ColorSync,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp)
-                ) { viewModel.onSync() }
-            }
-
-            if (state.gameActive) {
                 // Row – backspace / clear
                 item {
                     Row(
@@ -361,7 +366,10 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
                     }
                 }
 
-                // Row – resign / draw offer
+                // ---- Section divider: Game Controls ----
+                item { SectionDivider(label = "Controls") }
+
+                // Row – sync / resign / draw offer
                 item {
                     Row(
                         modifier = Modifier
@@ -369,6 +377,12 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
                             .padding(horizontal = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
                     ) {
+                        WideChipButton(
+                            label = "SYNC",
+                            color = ColorSync,
+                            modifier = Modifier.weight(1f)
+                        ) { viewModel.onSync() }
+
                         WideChipButton(
                             label = "RESIGN",
                             color = ColorResign,
@@ -632,6 +646,41 @@ private fun WideChipButton(
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
             maxLines = 1
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Section divider with label
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SectionDivider(label: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(ColorText.copy(alpha = 0.15f))
+        )
+        Text(
+            text = label.uppercase(),
+            color = ColorText.copy(alpha = 0.35f),
+            fontSize = 8.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.sp
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(ColorText.copy(alpha = 0.15f))
         )
     }
 }

@@ -1,8 +1,6 @@
 package com.example.chessmobile
 
-import android.content.Intent
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -44,11 +42,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                ChessMobileScreen(
-                    onOpenAccessibilitySettings = {
-                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }
-                )
+                ChessMobileScreen()
             }
         }
     }
@@ -56,7 +50,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChessMobileScreen(onOpenAccessibilitySettings: () -> Unit) {
+fun ChessMobileScreen() {
     val moves by MoveRepository.moves.collectAsStateWithLifecycle()
     val lastStatus by MoveRepository.lastStatus.collectAsStateWithLifecycle()
     val watchConnected by MoveRepository.watchConnected.collectAsStateWithLifecycle()
@@ -103,9 +97,6 @@ fun ChessMobileScreen(onOpenAccessibilitySettings: () -> Unit) {
 
             // Watch connection status card
             WatchConnectionCard(watchConnected)
-
-            // Accessibility service status card
-            AccessibilityStatusCard(onOpenAccessibilitySettings)
 
             when (currentScreen) {
                 AppScreen.PROVIDER_SELECTION -> {
@@ -353,28 +344,22 @@ fun LichessConfigScreen(
                 }
             }
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Button(
+            onClick = {
+                LichessApiKeyManager.saveApiKey(context, apiKeyInput)
+                apiKeySaved = true
+            },
+            enabled = apiKeyInput.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Button(
-                onClick = {
-                    LichessApiKeyManager.saveApiKey(context, apiKeyInput)
-                    apiKeySaved = true
-                },
-                enabled = apiKeyInput.isNotBlank(),
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Save Token")
-            }
-            if (apiKeySaved) {
-                Text(
-                    "Saved",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF2E7D32)
-                )
-            }
+            Text("Save Token")
+        }
+        if (apiKeySaved) {
+            Text(
+                "✓ Token saved",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF2E7D32)
+            )
         }
         Text(
             "Generate a token at lichess.org → Settings → API access tokens. " +
@@ -720,25 +705,3 @@ fun GameResultScreen(
     }
 }
 
-@Composable
-fun AccessibilityStatusCard(onOpenSettings: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Accessibility Service", style = MaterialTheme.typography.labelLarge)
-                Text(
-                    "Required to execute moves in Chess.com / Lichess",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            TextButton(onClick = onOpenSettings) {
-                Text("Enable")
-            }
-        }
-    }
-}
