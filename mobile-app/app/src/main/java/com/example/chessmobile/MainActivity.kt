@@ -43,6 +43,9 @@ class MainActivity : ComponentActivity() {
                 MoveRepository.setWatchConnected(nodes.isNotEmpty())
             }
 
+        // Restore any Lichess session that survived a previous app process death
+        MoveRepository.loadPersistedSessions(this)
+
         setContent {
             MaterialTheme {
                 ChessMobileScreen()
@@ -61,6 +64,7 @@ fun ChessMobileScreen() {
     val gameResult by MoveRepository.gameResult.collectAsStateWithLifecycle()
     val phoneInputError by MoveRepository.phoneInputError.collectAsStateWithLifecycle()
     val navigateToHome by MoveRepository.navigateToHome.collectAsStateWithLifecycle()
+    val resumableSessions by MoveRepository.resumableSessions.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val keyboardViewModel: MobileKeyboardViewModel = viewModel()
@@ -124,9 +128,14 @@ fun ChessMobileScreen() {
             when (currentScreen) {
                 AppScreen.PROVIDER_SELECTION -> {
                     ProviderSelectionScreen(
+                        resumableSessions = resumableSessions,
                         onProviderSelected = { provider ->
                             selectedProvider = provider
                             currentScreen = AppScreen.PROVIDER_CONFIG
+                        },
+                        onResumeGame = { providerName ->
+                            MoveRepository.resumeGame(providerName, context)
+                            currentScreen = AppScreen.IN_GAME
                         }
                     )
                 }
@@ -254,11 +263,22 @@ fun ChessMobileScreen() {
                                 }
                             }
                         } else {
-                            Button(
-                                onClick = { showKeyboard = true },
-                                modifier = Modifier.fillMaxWidth()
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Controller Panel")
+                                Button(
+                                    onClick = { showKeyboard = true },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Controller Panel")
+                                }
+                                OutlinedButton(
+                                    onClick = { MoveRepository.pauseGame(context) },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Leave Game")
+                                }
                             }
                         }
                     }
@@ -271,7 +291,11 @@ fun ChessMobileScreen() {
 }
 
 @Composable
-fun ProviderSelectionScreen(onProviderSelected: (GameProvider) -> Unit) {
+fun ProviderSelectionScreen(
+    resumableSessions: Map<String, ResumableSession>,
+    onProviderSelected: (GameProvider) -> Unit,
+    onResumeGame: (providerName: String) -> Unit
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             "Choose Game Provider",
@@ -279,32 +303,53 @@ fun ProviderSelectionScreen(onProviderSelected: (GameProvider) -> Unit) {
         )
 
         // Random Moves card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { onProviderSelected(RandomMovesProvider) }
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Random Moves", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "The phone plays random moves as your opponent. Good for testing.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
+        ProviderCard(
+            title = "Random Moves",
+            description = "The phone plays random moves as your opponent. Good for testing.",
+            resumableSession = resumableSessions["Random Moves"],
+            onNewGame = { onProviderSelected(RandomMovesProvider) },
+            onResume = { onResumeGame("Random Moves") }
+        )
 
         // Lichess card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { onProviderSelected(LichessProvider()) }
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Lichess", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "Play against a Lichess Stockfish bot via the Board API.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        ProviderCard(
+            title = "Lichess",
+            description = "Play against a Lichess Stockfish bot via the Board API.",
+            resumableSession = resumableSessions["Lichess"],
+            onNewGame = { onProviderSelected(LichessProvider()) },
+            onResume = { onResumeGame("Lichess") }
+        )
+    }
+}
+
+@Composable
+private fun ProviderCard(
+    title: String,
+    description: String,
+    resumableSession: ResumableSession?,
+    onNewGame: () -> Unit,
+    onResume: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onNewGame
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (resumableSession != null) {
+                val colorLabel = resumableSession.playerColor.name.lowercase()
+                    .replaceFirstChar { it.uppercase() }
+                OutlinedButton(
+                    onClick = onResume,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Resume game (playing $colorLabel)")
+                }
             }
         }
     }

@@ -51,7 +51,7 @@ class WearMessageListenerService : WearableListenerService() {
             PATH_CHESS_DRAW_OFFER -> handleDrawOffer()
             PATH_CHESS_HOME -> {
                 Log.d(TAG, "Home requested by watch")
-                MoveRepository.requestNavigateHome()
+                MoveRepository.requestPauseGame(this)
             }
             else -> Log.w(TAG, "Unknown path: ${messageEvent.path}")
         }

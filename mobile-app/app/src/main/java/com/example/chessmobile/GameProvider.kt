@@ -49,6 +49,8 @@ interface GameProvider {
     fun onPlayerMove(san: String, context: Context, callback: (opponentMove: String?, error: String?) -> Unit)
     fun onGameStart(config: ProviderConfig, context: Context) {}
     fun onGameEnd() {}
+    fun onGamePause() {}
+    fun onGameResume(context: Context) {}
     fun onResign(context: Context) {}
     fun onDrawOffer(context: Context) {}
 }
@@ -111,6 +113,7 @@ class LichessProvider : GameProvider {
     private val board = ChessBoard()
     @Volatile private var lastKnownMoveCount = 0
     @Volatile private var pendingMoveCallback: ((String?, String?) -> Unit)? = null
+    @Volatile private var needsHistoryRebuild = false
     private var streamJob: Job? = null
     @Volatile private var streamConnection: HttpURLConnection? = null
     private var appContext: Context? = null
@@ -122,6 +125,8 @@ class LichessProvider : GameProvider {
             return
         }
         appContext = context.applicationContext
+        // Clear any stale persisted session — we are starting fresh
+        GameSessionStore.clearLichessSession(context)
 
         if (!scope.isActive) {
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -256,10 +261,88 @@ class LichessProvider : GameProvider {
         streamConnection?.disconnect()  // Unblocks the readLine() call in the stream coroutine
         streamJob?.cancel()
         scope.cancel()
+        appContext?.let { GameSessionStore.clearLichessSession(it) }
         gameId = null
         pendingMoveCallback = null
         streamConnection = null
         appContext = null
+    }
+
+    /**
+     * Pauses the game by disconnecting the stream while preserving the game ID and board state.
+     * Saves the session to SharedPreferences so it survives app restarts.
+     */
+    override fun onGamePause() {
+        streamConnection?.disconnect()
+        streamJob?.cancel()
+        scope.cancel()
+        // Save to persistent storage so we can resume after an app restart
+        val ctx = appContext ?: return
+        val gId = gameId ?: return
+        val colorChar = if (playerColor == ChessColor.WHITE) "W" else "B"
+        GameSessionStore.saveLichessSession(ctx, gId, colorChar)
+    }
+
+    /**
+     * Resumes the game by reconnecting to the Lichess stream. Works for both warm resumes
+     * (provider instance was kept in memory) and cold resumes (new instance after app restart).
+     * On stream failure the session is cleared and a game-over result is reported.
+     */
+    override fun onGameResume(context: Context) {
+        appContext = context.applicationContext
+
+        // Load API key if this is a cold-start (fresh provider instance)
+        if (apiKey.isBlank()) {
+            apiKey = LichessApiKeyManager.getApiKey(context) ?: run {
+                Log.e("LichessProvider", "No API key for resume")
+                return
+            }
+        }
+
+        // Load game ID from SharedPreferences if this is a cold-start
+        val gId = gameId ?: run {
+            val stored = GameSessionStore.loadLichessSession(context) ?: run {
+                Log.e("LichessProvider", "No stored session for cold resume")
+                return
+            }
+            gameId = stored.gameId
+            playerColor = stored.playerColor
+            stored.gameId ?: return
+        }
+
+        // Fresh scope and board for the reconnected stream
+        if (!scope.isActive) {
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        }
+        synchronized(board) { board.reset() }
+        lastKnownMoveCount = 0
+        needsHistoryRebuild = true
+
+        streamJob = LichessService.streamGame(
+            scope = scope,
+            apiKey = apiKey,
+            gameId = gId,
+            onConnected = { conn -> streamConnection = conn },
+            onGameFull = { initialMoves, _ ->
+                if (initialMoves.isNotEmpty()) {
+                    handleGameState(initialMoves)
+                }
+            },
+            onGameState = { moves ->
+                handleGameState(moves)
+            },
+            onGameEnd = { status, winner ->
+                val ctx = appContext ?: return@streamGame
+                GameSessionStore.clearLichessSession(ctx)
+                MoveRepository.endGameWithResult(status, winner, ctx)
+            },
+            onError = { e ->
+                Log.e("LichessProvider", "Stream resume error: ${e.message}")
+                val ctx = appContext ?: return@streamGame
+                GameSessionStore.clearLichessSession(ctx)
+                MoveRepository.endGameWithResult("finish", null, ctx)
+            }
+        )
     }
 
     // -------------------------------------------------------------------------
@@ -293,16 +376,39 @@ class LichessProvider : GameProvider {
         // sanToUci (called from onPlayerMove) never reads a partially-updated board.
         val lastUci = uciList[newCount - 1]
         val lastSan: String
+        // On resume we need all SANs to rebuild the move history; otherwise just the last.
+        val allSans = if (needsHistoryRebuild) mutableListOf<String>() else null
         synchronized(board) {
             board.reset()
             for (i in 0 until newCount - 1) {
+                allSans?.add(board.uciToSan(uciList[i]))
                 board.applyUci(uciList[i])
             }
             lastSan = board.uciToSan(lastUci)
+            allSans?.add(lastSan)
             board.applyUci(lastUci)
         }
 
         lastKnownMoveCount = newCount
+
+        if (needsHistoryRebuild) {
+            needsHistoryRebuild = false
+            // Rebuild the full move history from the stream's authoritative UCI list.
+            // Entry invariant: move=white half (even indices), response=black half (odd indices).
+            val entries = mutableListOf<MoveEntry>()
+            var i = 0
+            while (i < allSans!!.size) {
+                entries.add(MoveEntry(
+                    moveNumber = entries.size + 1,
+                    move = allSans[i],
+                    response = allSans.getOrNull(i + 1),
+                    status = MoveStatus.EXECUTED
+                ))
+                i += 2
+            }
+            MoveRepository.restoreHistory(entries)
+            return
+        }
 
         if (isOpponentMove) {
             onOpponentMoved(san = lastSan, uci = lastUci)

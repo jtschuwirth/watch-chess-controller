@@ -16,15 +16,18 @@ data class MovePair(
  * @param moveHistory  The ordered list of move pairs that have been sent/responded to.
  * @param playerColor  The player's piece color synced from the phone: "W", "B", or null if unknown.
  * @param gameResult   Non-null when the game has ended; contains the human-readable result message.
+ * @param gamePaused   True when the user navigated away from the game on the phone. The move history
+ *                     is preserved and play can resume via SYNC when the phone resumes the game.
  */
 data class MoveInputState(
     val currentInput: String = "",
     val moveHistory: List<MovePair> = emptyList(),
     val playerColor: String? = null,
-    val gameResult: String? = null
+    val gameResult: String? = null,
+    val gamePaused: Boolean = false
 ) {
     val hasInput: Boolean get() = currentInput.isNotEmpty()
-    val gameActive: Boolean get() = (playerColor == "W" || playerColor == "B") && gameResult == null
+    val gameActive: Boolean get() = (playerColor == "W" || playerColor == "B") && gameResult == null && !gamePaused
     val gameOver: Boolean get() = gameResult != null
 
     /** The most recent move played (by either side), or null if no moves yet. */
@@ -203,6 +206,7 @@ data class MoveInputState(
             }
         }
 
-        return copy(moveHistory = newHistory, playerColor = newColor, currentInput = "")
+        val clearPaused = newColor == "W" || newColor == "B"
+        return copy(moveHistory = newHistory, playerColor = newColor, currentInput = "", gamePaused = if (clearPaused) false else gamePaused)
     }
 }

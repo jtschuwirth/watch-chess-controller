@@ -63,6 +63,7 @@ private const val PATH_CHESS_SYNC = "/chess/sync"
 private const val PATH_CHESS_SYNC_RESPONSE = "/chess/sync/response"
 private const val PATH_CHESS_GAME_START = "/chess/game/start"
 private const val PATH_CHESS_GAME_END = "/chess/game/end"
+private const val PATH_CHESS_GAME_PAUSE = "/chess/game/pause"
 private const val PATH_CHESS_RESIGN = "/chess/resign"
 private const val PATH_CHESS_DRAW_OFFER = "/chess/draw/offer"
 private const val PATH_CHESS_HOME = "/chess/home"
@@ -74,13 +75,6 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
 
     private val messageListener = MessageClient.OnMessageReceivedListener { event ->
         when (event.path) {
-            PATH_CHESS_GAME_START -> {
-                val color = String(event.data, Charsets.UTF_8).trim()
-                Log.d("ChessMoveViewModel", "Game started, player color: $color")
-                _uiState.update { it.copy(playerColor = color, moveHistory = emptyList(), currentInput = "") }
-                // Wake the screen immediately when playing White — it's our turn from move 1
-                if (color == "W") wakeScreen()
-            }
             PATH_CHESS_MOVE -> {
                 val response = String(event.data, Charsets.UTF_8).trim()
                 Log.d("ChessMoveViewModel", "Phone response move: '$response'")
@@ -107,9 +101,21 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     // Game ended with a result — show game-over screen
                     Log.d("ChessMoveViewModel", "Game ended with result: $payload")
-                    _uiState.update { it.copy(playerColor = null, gameResult = payload) }
+                    _uiState.update { it.copy(playerColor = null, gameResult = payload, gamePaused = false) }
                     wakeScreen()
                 }
+            }
+            PATH_CHESS_GAME_PAUSE -> {
+                // Phone navigated home mid-game; preserve move history so SYNC can restore it
+                Log.d("ChessMoveViewModel", "Game paused by phone")
+                _uiState.update { it.copy(playerColor = null, gamePaused = true) }
+            }
+            PATH_CHESS_GAME_START -> {
+                // Also clears the paused state when a game (or resumed game) becomes active
+                val color = String(event.data, Charsets.UTF_8).trim()
+                Log.d("ChessMoveViewModel", "Game started/resumed, player color: $color")
+                _uiState.update { it.copy(playerColor = color, gamePaused = false, moveHistory = emptyList(), currentInput = "") }
+                if (color == "W") wakeScreen()
             }
             PATH_CHESS_HOME -> {
                 Log.d("ChessMoveViewModel", "Home requested by phone")
@@ -257,7 +263,8 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
                 GameStatusBanner(
                     playerColor = state.playerColor,
                     gameActive = state.gameActive,
-                    gameOver = state.gameOver
+                    gameOver = state.gameOver,
+                    gamePaused = state.gamePaused
                 )
             }
 
@@ -448,19 +455,27 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
 // ---------------------------------------------------------------------------
 
 private val ColorStatusGameOver = Color(0xFF4A148C)   // deep purple – game over
+private val ColorStatusPaused  = Color(0xFFE65100)   // dark amber – game paused
 
 @Composable
-private fun GameStatusBanner(playerColor: String?, gameActive: Boolean, gameOver: Boolean = false) {
+private fun GameStatusBanner(
+    playerColor: String?,
+    gameActive: Boolean,
+    gameOver: Boolean = false,
+    gamePaused: Boolean = false
+) {
     val bgColor = when {
-        gameOver -> ColorStatusGameOver
+        gameOver   -> ColorStatusGameOver
         gameActive -> ColorStatusActive
-        else -> ColorStatusIdle
+        gamePaused -> ColorStatusPaused
+        else       -> ColorStatusIdle
     }
     val text = when {
-        gameOver -> "Game Over"
-        playerColor == "W" -> "Game active \u25A1 White"   // □ White
-        playerColor == "B" -> "Game active \u25A0 Black"   // ■ Black
-        else -> "No active game"
+        gameOver   -> "Game Over"
+        gameActive && playerColor == "W" -> "Game active \u25A1 White"   // □ White
+        gameActive && playerColor == "B" -> "Game active \u25A0 Black"   // ■ Black
+        gamePaused -> "Game paused \u23F8"  // ⏸
+        else       -> "No active game"
     }
     Box(
         modifier = Modifier
@@ -472,7 +487,7 @@ private fun GameStatusBanner(playerColor: String?, gameActive: Boolean, gameOver
     ) {
         Text(
             text = text,
-            color = if (gameActive || gameOver) Color.White else ColorText.copy(alpha = 0.45f),
+            color = if (gameActive || gameOver || gamePaused) Color.White else ColorText.copy(alpha = 0.45f),
             fontSize = 12.sp,
             fontWeight = if (gameActive || gameOver) FontWeight.SemiBold else FontWeight.Normal,
             textAlign = TextAlign.Center,

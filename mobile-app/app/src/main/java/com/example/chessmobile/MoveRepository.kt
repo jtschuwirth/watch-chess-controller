@@ -36,6 +36,18 @@ enum class ChessColor { WHITE, BLACK }
 
 data class GameInfo(val playerColor: ChessColor, val providerName: String)
 
+data class GameSession(
+    val gameInfo: GameInfo,
+    val moves: List<MoveEntry>,
+    val provider: GameProvider
+)
+
+data class ResumableSession(
+    val providerName: String,
+    val playerColor: ChessColor,
+    val gameId: String? = null
+)
+
 object MoveRepository {
     val MOVE_REGEX = Regex(
         """^(""" +
@@ -68,6 +80,39 @@ object MoveRepository {
 
     private val _navigateToHome = MutableStateFlow(false)
     val navigateToHome: StateFlow<Boolean> = _navigateToHome.asStateFlow()
+
+    // Paused sessions: in-memory sessions the user navigated away from mid-game
+    private val _pausedSessions = MutableStateFlow<Map<String, GameSession>>(emptyMap())
+
+    // Stored sessions loaded from SharedPreferences on cold start (Lichess only)
+    private val _storedSessions = MutableStateFlow<Map<String, ResumableSession>>(emptyMap())
+
+    // Combined view for the UI: paused sessions + cold-start stored sessions
+    private val _resumableSessions = MutableStateFlow<Map<String, ResumableSession>>(emptyMap())
+    val resumableSessions: StateFlow<Map<String, ResumableSession>> = _resumableSessions.asStateFlow()
+
+    private fun updateResumableSessions() {
+        val result = mutableMapOf<String, ResumableSession>()
+        result.putAll(_storedSessions.value)
+        _pausedSessions.value.forEach { (key, session) ->
+            result[key] = ResumableSession(providerName = key, playerColor = session.gameInfo.playerColor)
+        }
+        _resumableSessions.value = result
+    }
+
+    /** Call once from MainActivity.onCreate to restore any Lichess session persisted across app restarts. */
+    fun loadPersistedSessions(context: Context) {
+        val stored = mutableMapOf<String, ResumableSession>()
+        GameSessionStore.loadLichessSession(context)?.let { session ->
+            // Only surface if there is no live paused session for this provider already
+            if (!_pausedSessions.value.containsKey(session.providerName)) {
+                stored[session.providerName] = session
+            }
+        }
+        _storedSessions.value = stored
+        updateResumableSessions()
+    }
+
     fun clearNavigateToHome() { _navigateToHome.value = false }
     fun setPhoneInputError(msg: String?) { _phoneInputError.value = msg }
     fun clearPhoneInputError() { _phoneInputError.value = null }
@@ -77,6 +122,18 @@ object MoveRepository {
     }
 
     fun startGame(config: ProviderConfig, provider: GameProvider, context: Context) {
+        // End any paused session for this provider so it doesn't linger
+        val existingPaused = _pausedSessions.value[provider.name]
+        if (existingPaused != null) {
+            existingPaused.provider.onGameEnd()
+            _pausedSessions.update { it - provider.name }
+        }
+        // Clear any cold-start stored entry for this provider
+        if (_storedSessions.value.containsKey(provider.name)) {
+            _storedSessions.update { it - provider.name }
+        }
+        updateResumableSessions()
+
         val playerColor = when (config) {
             is ProviderConfig.RandomMoves -> resolveColor(config.color)
             // For Lichess use the requested color as a placeholder; updateGameColor() will
@@ -110,6 +167,97 @@ object MoveRepository {
                 Wearable.getMessageClient(context)
                     .sendMessage(node.id, "/chess/game/end", ByteArray(0))
             }
+        }
+    }
+
+    /**
+     * Leaves the current game without ending it. The session is preserved in memory and (for
+     * Lichess) in SharedPreferences so the user can resume later. The watch is notified with
+     * /chess/game/pause so it shows a "paused" state rather than fully resetting.
+     */
+    fun pauseGame(context: Context) {
+        val provider = _activeProvider.value ?: return
+        val gameInfo = _gameInfo.value ?: return
+
+        // Save current session for later resumption
+        val session = GameSession(gameInfo, _moves.value, provider)
+        _pausedSessions.update { it + (provider.name to session) }
+
+        // Let the provider pause itself (Lichess: saves to store & disconnects stream)
+        provider.onGamePause()
+
+        // Remove any cold-start stored entry for this provider (replaced by warm paused session)
+        _storedSessions.update { it - provider.name }
+        updateResumableSessions()
+
+        // Clear active flat state
+        _activeProvider.value = null
+        _gameInfo.value = null
+        _lastStatus.value = null
+        _moves.value = emptyList()
+
+        // Tell the watch the game is paused
+        Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
+            nodes.forEach { node ->
+                Wearable.getMessageClient(context)
+                    .sendMessage(node.id, "/chess/game/pause", ByteArray(0))
+            }
+        }
+
+        _navigateToHome.value = true
+    }
+
+    /**
+     * Resumes a previously paused session. For Lichess, reconnects the stream (or reconnects
+     * cold from SharedPreferences if the app was restarted). For Random Moves, restores history.
+     */
+    fun resumeGame(providerName: String, context: Context) {
+        val pausedSession = _pausedSessions.value[providerName]
+
+        if (pausedSession != null) {
+            // Warm resume: live provider instance still exists
+            _activeProvider.value = pausedSession.provider
+            _gameInfo.value = pausedSession.gameInfo
+            _pausedSessions.update { it - providerName }
+            updateResumableSessions()
+
+            // For RandomMoves there is no stream to rebuild from, so restore moves directly
+            if (pausedSession.provider !is LichessProvider) {
+                _moves.value = pausedSession.moves
+            } else {
+                _moves.value = emptyList() // Lichess stream's gameFull event will rebuild
+            }
+
+            pausedSession.provider.onGameResume(context)
+        } else {
+            // Cold resume: new provider instance, read stored session from SharedPreferences
+            val stored = GameSessionStore.loadLichessSession(context) ?: return
+            val provider = LichessProvider()
+            _activeProvider.value = provider
+            _gameInfo.value = GameInfo(stored.playerColor, "Lichess")
+            _moves.value = emptyList() // Will be rebuilt from Lichess stream
+            _storedSessions.update { it - "Lichess" }
+            updateResumableSessions()
+            provider.onGameResume(context)
+        }
+
+        // Notify watch that the game is active again
+        val colorChar = if (_gameInfo.value?.playerColor == ChessColor.WHITE) "W" else "B"
+        Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
+            nodes.forEach { node ->
+                Wearable.getMessageClient(context)
+                    .sendMessage(node.id, "/chess/game/start", colorChar.toByteArray(Charsets.UTF_8))
+            }
+        }
+    }
+
+    /** Called by WearMessageListenerService when the watch sends /chess/home. */
+    fun requestPauseGame(context: Context) {
+        if (_activeProvider.value != null) {
+            pauseGame(context)
+        } else {
+            // Game already over or not active — just navigate home
+            _navigateToHome.value = true
         }
     }
 
@@ -265,6 +413,10 @@ object MoveRepository {
                 cont.resume(null)
             }
         }
+    }
+
+    fun restoreHistory(entries: List<MoveEntry>) {
+        _moves.value = entries
     }
 
     fun addMove(move: String) {
