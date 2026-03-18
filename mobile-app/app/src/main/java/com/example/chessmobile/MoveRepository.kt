@@ -223,20 +223,38 @@ object MoveRepository {
     suspend fun processPlayerMove(move: String, context: Context): String? {
         if (!MOVE_REGEX.matches(move)) return "Invalid: $move"
 
-        addMove(move)
+        // For Black player the entry model is: move=White's half, response=Black's half.
+        // The player's (Black's) move fills the response field of the current White entry.
+        // For White player the entry model is unchanged: move=White's half, response=Black's half.
+        val isBlackPlayer = gameInfo.value?.playerColor == ChessColor.BLACK
+
+        if (isBlackPlayer) {
+            setLastMoveResponse(move)
+            updateLastMoveStatus(MoveStatus.PENDING)
+        } else {
+            addMove(move)
+        }
+
         val provider = activeProvider.value
             ?: run { updateLastMoveStatus(MoveStatus.FAILED, "No active game provider."); return "No game" }
 
         return suspendCancellableCoroutine { cont ->
             provider.onPlayerMove(move, context) { opponentMove, error ->
                 if (error != null) {
-                    removeLastMove()
+                    if (isBlackPlayer) clearLastMoveResponse() else removeLastMove()
                     setLastStatus("Invalid move: $move")
                     cont.resume(error.take(12))
                     return@onPlayerMove
                 }
                 if (opponentMove != null) {
-                    setLastMoveResponse(opponentMove)
+                    // For Black player, the opponent's reply is White's next move → new entry.
+                    // For White player, the opponent's reply is Black's response → fill response.
+                    if (isBlackPlayer) {
+                        addMove(opponentMove)
+                        updateLastMoveStatus(MoveStatus.EXECUTED)
+                    } else {
+                        setLastMoveResponse(opponentMove)
+                    }
                 }
                 if (provider is LichessProvider) {
                     updateLastMoveStatus(MoveStatus.EXECUTED)
@@ -278,6 +296,14 @@ object MoveRepository {
     /** Removes the last move entry (used to undo an optimistic add when a move is rejected). */
     fun removeLastMove() {
         _moves.update { list -> if (list.isEmpty()) list else list.dropLast(1) }
+    }
+
+    /** Clears the response field of the last entry (undo for Black player's optimistic response). */
+    fun clearLastMoveResponse() {
+        _moves.update { list ->
+            if (list.isEmpty()) list
+            else list.dropLast(1) + list.last().copy(response = null, status = MoveStatus.EXECUTED)
+        }
     }
 
     fun setLastStatus(message: String) {

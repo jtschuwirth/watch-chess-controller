@@ -201,7 +201,7 @@ class LichessProvider : GameProvider {
 
     override fun onPlayerMove(san: String, context: Context, callback: (String?, String?) -> Unit) {
         val gId = gameId ?: run { callback(null, "No active Lichess game"); return }
-        val uci = board.sanToUci(san) ?: run {
+        val uci = synchronized(board) { board.sanToUci(san) } ?: run {
             callback(null, "Cannot convert move: $san")
             return
         }
@@ -213,11 +213,8 @@ class LichessProvider : GameProvider {
             try {
                 val success = LichessService.makeMove(apiKey, gId, uci)
                 if (success) {
-                    // Apply our move to the local board so it stays in sync
-                    board.applyUci(uci)
-                    // callback(null, null) is intentionally NOT called here — the stream will
-                    // deliver the status update and any opponent reply via handleGameState().
-                    // We DO call it to signal move acceptance (no opponent move yet).
+                    // Do NOT apply to the local board here — the stream is the sole
+                    // source of truth for board state (see handleGameState full rebuild).
                     callback(null, null)
                     pendingMoveCallback = null
                 } else {
@@ -227,6 +224,30 @@ class LichessProvider : GameProvider {
             } catch (e: Exception) {
                 pendingMoveCallback = null
                 callback(null, "Network error: ${e.message?.take(30)}")
+            }
+        }
+    }
+
+    override fun onResign(context: Context) {
+        val gId = gameId ?: return
+        scope.launch {
+            try {
+                LichessService.resign(apiKey, gId)
+                // Stream will fire a gameState with status="resign" → MoveRepository.endGameWithResult
+            } catch (e: Exception) {
+                Log.e("LichessProvider", "Resign failed: ${e.message}")
+            }
+        }
+    }
+
+    override fun onDrawOffer(context: Context) {
+        val gId = gameId ?: return
+        scope.launch {
+            try {
+                LichessService.offerOrAcceptDraw(apiKey, gId)
+                // Stream will fire a gameState with status="draw" → MoveRepository.endGameWithResult
+            } catch (e: Exception) {
+                Log.e("LichessProvider", "Draw offer failed: ${e.message}")
             }
         }
     }
@@ -247,6 +268,7 @@ class LichessProvider : GameProvider {
 
     private fun handleGameState(moves: String) {
         if (moves.isBlank()) {
+            synchronized(board) { board.reset() }
             lastKnownMoveCount = 0
             return
         }
@@ -265,14 +287,20 @@ class LichessProvider : GameProvider {
             latestIdx % 2 == 0
         }
 
-        // Apply all new moves except the last, then convert the last to SAN before applying it
-        // (uciToSan needs the board state prior to the move being applied)
-        for (i in lastKnownMoveCount until newCount - 1) {
-            board.applyUci(uciList[i])
-        }
+        // Full rebuild from the authoritative Lichess move list. This prevents any drift
+        // from the race condition between the stream coroutine and the move-submission
+        // coroutine, both of which run on Dispatchers.IO. synchronized(board) ensures
+        // sanToUci (called from onPlayerMove) never reads a partially-updated board.
         val lastUci = uciList[newCount - 1]
-        val lastSan = board.uciToSan(lastUci)
-        board.applyUci(lastUci)
+        val lastSan: String
+        synchronized(board) {
+            board.reset()
+            for (i in 0 until newCount - 1) {
+                board.applyUci(uciList[i])
+            }
+            lastSan = board.uciToSan(lastUci)
+            board.applyUci(lastUci)
+        }
 
         lastKnownMoveCount = newCount
 
@@ -283,8 +311,16 @@ class LichessProvider : GameProvider {
 
     private fun onOpponentMoved(san: String, uci: String) {
         Log.d("LichessProvider", "Opponent played: $uci (SAN: $san)")
-        MoveRepository.setLastMoveResponse(san)
-        MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
+        // Entry model invariant: move=White's half, response=Black's half (for both colors).
+        // Black player: opponent (White) always starts a new entry via addMove.
+        // White player: opponent (Black) fills the response of the player's existing entry.
+        if (playerColor == ChessColor.BLACK) {
+            MoveRepository.addMove(san)
+            MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
+        } else {
+            MoveRepository.setLastMoveResponse(san)
+            MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
+        }
 
         // Forward the opponent's move to the watch in SAN for display
         val ctx = appContext ?: return

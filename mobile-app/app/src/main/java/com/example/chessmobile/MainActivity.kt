@@ -158,6 +158,7 @@ fun ChessMobileScreen() {
                     GameResultScreen(
                         result = gameResult ?: "Game over.",
                         moves = moves,
+                        playerColor = gameInfo?.playerColor,
                         onNewGame = {
                             MoveRepository.clearGameResult(context)
                             currentScreen = AppScreen.PROVIDER_SELECTION
@@ -182,7 +183,7 @@ fun ChessMobileScreen() {
                         }
 
                         // Move log header
-                        MoveLogHeader()
+                        MoveLogHeader(playerColor = gameInfo!!.playerColor)
 
                         // Move list
                         if (moves.isEmpty()) {
@@ -557,7 +558,9 @@ fun GameInfoBanner(gameInfo: GameInfo) {
 }
 
 @Composable
-fun MoveLogHeader() {
+fun MoveLogHeader(playerColor: ChessColor? = null) {
+    val whiteLabel = if (playerColor == ChessColor.WHITE) "White (You)" else "White"
+    val blackLabel = if (playerColor == ChessColor.BLACK) "Black (You)" else "Black"
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -576,13 +579,13 @@ fun MoveLogHeader() {
             fontFamily = FontFamily.Monospace
         )
         Text(
-            text = "White",
+            text = whiteLabel,
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
-            text = "Black",
+            text = blackLabel,
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -599,6 +602,11 @@ fun MoveLogHeader() {
 
 @Composable
 fun MoveRow(entry: MoveEntry) {
+    // Entry model invariant: move=White's half, response=Black's half (for both colors).
+    val whiteText = entry.move
+    val blackText = entry.response ?: "—"
+    val blackAvailable = entry.response != null
+
     val isEven = entry.moveNumber % 2 == 0
     Row(
         modifier = Modifier
@@ -623,22 +631,22 @@ fun MoveRow(entry: MoveEntry) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        // White move (from watch)
+        // White move
         Text(
-            text = entry.move,
+            text = whiteText,
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.bodyLarge,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.SemiBold
         )
 
-        // Black move (opponent response or placeholder)
+        // Black move
         Text(
-            text = entry.response ?: "—",
+            text = blackText,
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.bodyLarge,
             fontFamily = FontFamily.Monospace,
-            color = if (entry.response != null)
+            color = if (blackAvailable)
                 MaterialTheme.colorScheme.onSurface
             else
                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
@@ -706,6 +714,7 @@ fun WatchConnectionCard(connected: Boolean) {
 fun GameResultScreen(
     result: String,
     moves: List<MoveEntry>,
+    playerColor: ChessColor?,
     onNewGame: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -748,7 +757,7 @@ fun GameResultScreen(
 
         // Move log
         if (moves.isNotEmpty()) {
-            MoveLogHeader()
+            MoveLogHeader(playerColor = playerColor)
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f),

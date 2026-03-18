@@ -113,6 +113,50 @@ object LichessService {
         }
 
     // -------------------------------------------------------------------------
+    // Resign  (POST /api/board/game/{id}/resign)
+    // -------------------------------------------------------------------------
+
+    suspend fun resign(apiKey: String, gameId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = URL("$BASE/api/board/game/$gameId/resign")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Authorization", "Bearer $apiKey")
+                connectTimeout = 10_000
+                readTimeout = 10_000
+            }
+            return@withContext try {
+                val code = conn.responseCode
+                Log.d(TAG, "resign → HTTP $code")
+                code == 200
+            } finally {
+                conn.disconnect()
+            }
+        }
+
+    // -------------------------------------------------------------------------
+    // Draw offer/accept  (POST /api/board/game/{id}/draw/yes)
+    // -------------------------------------------------------------------------
+
+    suspend fun offerOrAcceptDraw(apiKey: String, gameId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = URL("$BASE/api/board/game/$gameId/draw/yes")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Authorization", "Bearer $apiKey")
+                connectTimeout = 10_000
+                readTimeout = 10_000
+            }
+            return@withContext try {
+                val code = conn.responseCode
+                Log.d(TAG, "offerOrAcceptDraw → HTTP $code")
+                code == 200
+            } finally {
+                conn.disconnect()
+            }
+        }
+
+    // -------------------------------------------------------------------------
     // Stream game events  (GET /api/board/game/stream/{id})
     // -------------------------------------------------------------------------
 
@@ -162,7 +206,16 @@ object LichessService {
                         "gameFull" -> {
                             val state = json.optJSONObject("state")
                             val moves = state?.optString("moves") ?: ""
-                            val color = json.optString("color", "white")
+                            // The gameFull event has no top-level "color" field.
+                            // Determine the player's color by checking which side is the AI
+                            // (aiLevel is present on the AI's player object).
+                            val whiteObj = json.optJSONObject("white")
+                            val blackObj = json.optJSONObject("black")
+                            val color = when {
+                                whiteObj?.has("aiLevel") == true -> "black"
+                                blackObj?.has("aiLevel") == true -> "white"
+                                else -> "white"
+                            }
                             onGameFull(moves, color)
                         }
                         "gameState" -> {
