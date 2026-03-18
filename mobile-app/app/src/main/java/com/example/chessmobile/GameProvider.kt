@@ -140,12 +140,12 @@ object RandomMovesProvider : GameProvider {
 }
 
 // ---------------------------------------------------------------------------
-// Lichess Provider
+// Lichess Bots Provider
 // ---------------------------------------------------------------------------
 
-class LichessProvider : GameProvider {
+class LichessBotProvider : GameProvider {
 
-    override val name = "Lichess"
+    override val name = "Lichess Bots"
     override val executesMovesExternally: Boolean get() = true
 
     private var callbacks: GameProviderCallbacks? = null
@@ -166,7 +166,7 @@ class LichessProvider : GameProvider {
     override fun onGameStart(config: ProviderConfig, context: Context) {
         val cfg = config as? ProviderConfig.Lichess ?: return
         apiKey = LichessApiKeyManager.getApiKey(context) ?: run {
-            Log.e("LichessProvider", "No API key stored")
+            Log.e("LichessBotProvider", "No API key stored")
             return
         }
         appContext = context.applicationContext
@@ -234,11 +234,11 @@ class LichessProvider : GameProvider {
                         callbacks?.onGameEnded(status, winner)
                     },
                     onError = { e ->
-                        Log.e("LichessProvider", "Stream error: ${e.message}")
+                        Log.e("LichessBotProvider", "Stream error: ${e.message}")
                     }
                 )
             } catch (e: Exception) {
-                Log.e("LichessProvider", "Failed to start Lichess game: ${e.message}")
+                Log.e("LichessBotProvider", "Failed to start Lichess game: ${e.message}")
                 MoveRepository.updateLastMoveStatus(
                     MoveStatus.FAILED,
                     "Failed to start Lichess game: ${e.message?.take(40)}"
@@ -283,7 +283,7 @@ class LichessProvider : GameProvider {
                 LichessService.resign(apiKey, gId)
                 // Stream will fire a gameState with status="resign" → MoveRepository.endGameWithResult
             } catch (e: Exception) {
-                Log.e("LichessProvider", "Resign failed: ${e.message}")
+                Log.e("LichessBotProvider", "Resign failed: ${e.message}")
             }
         }
     }
@@ -295,7 +295,7 @@ class LichessProvider : GameProvider {
                 LichessService.offerOrAcceptDraw(apiKey, gId)
                 // Stream will fire a gameState with status="draw" → MoveRepository.endGameWithResult
             } catch (e: Exception) {
-                Log.e("LichessProvider", "Draw offer failed: ${e.message}")
+                Log.e("LichessBotProvider", "Draw offer failed: ${e.message}")
             }
         }
     }
@@ -337,7 +337,7 @@ class LichessProvider : GameProvider {
         // Load API key if this is a cold-start (fresh provider instance)
         if (apiKey.isBlank()) {
             apiKey = LichessApiKeyManager.getApiKey(context) ?: run {
-                Log.e("LichessProvider", "No API key for resume")
+                Log.e("LichessBotProvider", "No API key for resume")
                 return
             }
         }
@@ -345,7 +345,7 @@ class LichessProvider : GameProvider {
         // Load game ID from SharedPreferences if this is a cold-start
         val gId = gameId ?: run {
             val stored = GameSessionStore.loadLichessSession(context) ?: run {
-                Log.e("LichessProvider", "No stored session for cold resume")
+                Log.e("LichessBotProvider", "No stored session for cold resume")
                 return
             }
             gameId = stored.gameId
@@ -380,7 +380,7 @@ class LichessProvider : GameProvider {
                 callbacks?.onGameEnded(status, winner)
             },
             onError = { e ->
-                Log.e("LichessProvider", "Stream resume error: ${e.message}")
+                Log.e("LichessBotProvider", "Stream resume error: ${e.message}")
                 val ctx = appContext ?: return@streamGame
                 GameSessionStore.clearLichessSession(ctx)
                 callbacks?.onGameEnded("finish", null)
@@ -459,9 +459,30 @@ class LichessProvider : GameProvider {
     }
 
     private fun onOpponentMoved(san: String, uci: String) {
-        Log.d("LichessProvider", "Opponent played: $uci (SAN: $san)")
+        Log.d("LichessBotProvider", "Opponent played: $uci (SAN: $san)")
         callbacks?.onOpponentMove(san, sendToWatch = true)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Lichess Challenge Provider (stub)
+// ---------------------------------------------------------------------------
+
+class LichessChallengeProvider : GameProvider {
+
+    override val name = "Lichess Challenge"
+    override val executesMovesExternally: Boolean get() = true
+
+    override fun setCallbacks(callbacks: GameProviderCallbacks) {}
+    override fun onPlayerMove(san: String, context: Context, callback: (String?, String?) -> Unit) {
+        callback(null, "Not implemented yet")
+    }
+    override fun onGameStart(config: ProviderConfig, context: Context) {}
+    override fun onGameEnd() {}
+    override fun onGamePause() {}
+    override fun onGameResume(context: Context, savedMoves: List<MoveEntry>) {}
+    override fun onResign(context: Context) {}
+    override fun onDrawOffer(context: Context) {}
 }
 
 // ---------------------------------------------------------------------------

@@ -365,11 +365,11 @@ object MoveRepository {
         } else {
             // Cold resume: new provider instance, read stored session from SharedPreferences
             val stored = GameSessionStore.loadLichessSession(context) ?: return
-            val provider = LichessProvider()
+            val provider = LichessBotProvider()
             _activeProvider.value = provider
-            _gameInfo.value = GameInfo(stored.playerColor, "Lichess")
+            _gameInfo.value = GameInfo(stored.playerColor, "Lichess Bots")
             _moves.value = emptyList() // Will be rebuilt from Lichess stream
-            _storedSessions.update { it - "Lichess" }
+            _storedSessions.update { it - "Lichess Bots" }
             updateResumableSessions()
             provider.setCallbacks(providerCallbacks)
             provider.onGameResume(context, emptyList())

@@ -27,7 +27,7 @@ object GameSessionStore {
         val gameId = prefs.getString(KEY_LICHESS_GAME_ID, null) ?: return null
         val colorStr = prefs.getString(KEY_LICHESS_PLAYER_COLOR, null) ?: return null
         val color = if (colorStr == "W") ChessColor.WHITE else ChessColor.BLACK
-        return ResumableSession(providerName = "Lichess", playerColor = color, gameId = gameId)
+        return ResumableSession(providerName = "Lichess Bots", playerColor = color, gameId = gameId)
     }
 
     fun clearLichessSession(context: Context) {

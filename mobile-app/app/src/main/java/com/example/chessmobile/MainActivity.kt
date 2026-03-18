@@ -175,8 +175,8 @@ fun ChessMobileScreen() {
                             },
                             onBack = { currentScreen = AppScreen.PROVIDER_SELECTION }
                         )
-                        is LichessProvider -> {
-                            val provider = selectedProvider as LichessProvider
+                        is LichessBotProvider -> {
+                            val provider = selectedProvider as LichessBotProvider
                             LichessConfigScreen(
                                 onStart = { config ->
                                     MoveRepository.startGame(config, provider, context)
@@ -337,13 +337,22 @@ fun ProviderSelectionScreen(
             onResume = { onResumeGame("Random Moves") }
         )
 
-        // Lichess card
+        // Lichess Bots card
         ProviderCard(
-            title = "Lichess",
+            title = "Lichess Bots",
             description = "Play against a Lichess Stockfish bot via the Board API.",
-            resumableSession = resumableSessions["Lichess"],
-            onNewGame = { onProviderSelected(LichessProvider()) },
-            onResume = { onResumeGame("Lichess") }
+            resumableSession = resumableSessions["Lichess Bots"],
+            onNewGame = { onProviderSelected(LichessBotProvider()) },
+            onResume = { onResumeGame("Lichess Bots") }
+        )
+
+        // Lichess Challenge card
+        ProviderCard(
+            title = "Lichess Challenge",
+            description = "Challenge a human player on Lichess. (Coming soon)",
+            resumableSession = null,
+            onNewGame = { onProviderSelected(LichessChallengeProvider()) },
+            onResume = { onResumeGame("Lichess Challenge") }
         )
     }
 }
