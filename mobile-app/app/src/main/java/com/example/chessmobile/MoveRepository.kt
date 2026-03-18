@@ -85,6 +85,36 @@ object MoveRepository {
     private val _isTtsEnabled = MutableStateFlow(false)
     val isTtsEnabled: StateFlow<Boolean> = _isTtsEnabled.asStateFlow()
 
+    private var appContext: android.content.Context? = null
+
+    private val providerCallbacks = object : GameProviderCallbacks {
+        override fun onOpponentMove(san: String, sendToWatch: Boolean) {
+            recordOpponentMove(san)
+            updateLastMoveStatus(MoveStatus.EXECUTED)
+            if (sendToWatch) {
+                val ctx = appContext ?: return
+                com.google.android.gms.wearable.Wearable.getNodeClient(ctx).connectedNodes
+                    .addOnSuccessListener { nodes ->
+                        nodes.forEach { node ->
+                            com.google.android.gms.wearable.Wearable.getMessageClient(ctx)
+                                .sendMessage(node.id, "/chess/move", san.toByteArray(Charsets.UTF_8))
+                        }
+                    }
+            }
+        }
+        override fun onGameEnded(status: String, winner: String?) {
+            val ctx = appContext ?: return
+            endGameWithResult(status, winner, ctx)
+        }
+        override fun onColorAssigned(color: ChessColor) {
+            val ctx = appContext ?: return
+            updateGameColor(color, ctx)
+        }
+        override fun onHistoryRestored(entries: List<MoveEntry>) {
+            restoreHistory(entries)
+        }
+    }
+
     private var tts: TextToSpeech? = null
 
     fun initTts(context: Context) {
@@ -219,6 +249,7 @@ object MoveRepository {
     }
 
     fun startGame(config: ProviderConfig, provider: GameProvider, context: Context) {
+        appContext = context.applicationContext
         // End any paused session for this provider so it doesn't linger
         val existingPaused = _pausedSessions.value[provider.name]
         if (existingPaused != null) {
@@ -251,6 +282,7 @@ object MoveRepository {
                     .sendMessage(node.id, "/chess/game/start", colorChar.toByteArray(Charsets.UTF_8))
             }
         }
+        provider.setCallbacks(providerCallbacks)
         provider.onGameStart(config, context)
     }
 
@@ -260,6 +292,7 @@ object MoveRepository {
         _gameInfo.value = null
         _lastStatus.value = null
         _gameResult.value = null
+        appContext = null
         stopForegroundService(context)
         // Tell the watch the game is over so it hides the keyboard and resets its state
         Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
@@ -313,6 +346,8 @@ object MoveRepository {
      * cold from SharedPreferences if the app was restarted). For Random Moves, restores history.
      */
     fun resumeGame(providerName: String, context: Context) {
+        appContext = context.applicationContext
+
         val pausedSession = _pausedSessions.value[providerName]
 
         if (pausedSession != null) {
@@ -322,14 +357,11 @@ object MoveRepository {
             _pausedSessions.update { it - providerName }
             updateResumableSessions()
 
-            // For RandomMoves there is no stream to rebuild from, so restore moves directly
-            if (pausedSession.provider !is LichessProvider) {
-                _moves.value = pausedSession.moves
-            } else {
-                _moves.value = emptyList() // Lichess stream's gameFull event will rebuild
-            }
+            // Always start empty — provider calls onHistoryRestored if it cannot rebuild from stream
+            _moves.value = emptyList()
 
-            pausedSession.provider.onGameResume(context)
+            pausedSession.provider.setCallbacks(providerCallbacks)
+            pausedSession.provider.onGameResume(context, pausedSession.moves)
         } else {
             // Cold resume: new provider instance, read stored session from SharedPreferences
             val stored = GameSessionStore.loadLichessSession(context) ?: return
@@ -339,7 +371,8 @@ object MoveRepository {
             _moves.value = emptyList() // Will be rebuilt from Lichess stream
             _storedSessions.update { it - "Lichess" }
             updateResumableSessions()
-            provider.onGameResume(context)
+            provider.setCallbacks(providerCallbacks)
+            provider.onGameResume(context, emptyList())
         }
 
         initTts(context)
@@ -377,6 +410,7 @@ object MoveRepository {
         _activeProvider.value = null
         _gameResult.value = resultMsg
         _lastStatus.value = resultMsg
+        appContext = null
         stopForegroundService(context)
         // _gameInfo is left intact — cleared when the user dismisses the result screen
         val payload = resultMsg.toByteArray(Charsets.UTF_8)
@@ -453,21 +487,6 @@ object MoveRepository {
         }
     }
 
-    fun triggerRandomFirstMove(context: Context) {
-        val openingMoves = listOf("e4", "d4", "c4")
-        val randomMove = openingMoves.random()
-        Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
-            recordOpponentMove(randomMove)
-            nodes.forEach { node ->
-                // game/start was already sent by startGame(); just send the opening move
-                Wearable.getMessageClient(context)
-                    .sendMessage(node.id, "/chess/move", randomMove.toByteArray(Charsets.UTF_8))
-                    .addOnSuccessListener { updateLastMoveStatus(MoveStatus.EXECUTED) }
-                    .addOnFailureListener { updateLastMoveStatus(MoveStatus.FAILED, "Failed to send opening move") }
-            }
-        }
-    }
-
     /**
      * Core move-processing logic shared by the watch path (WearMessageListenerService)
      * and the phone keyboard path (MobileKeyboardViewModel).
@@ -503,7 +522,7 @@ object MoveRepository {
                     recordOpponentMove(opponentMove)
                     if (isBlackPlayer) updateLastMoveStatus(MoveStatus.EXECUTED)
                 }
-                if (provider is LichessProvider) {
+                if (provider.executesMovesExternally) {
                     updateLastMoveStatus(MoveStatus.EXECUTED)
                 } else {
                     ChessAccessibilityService.instance?.executeMove(move)

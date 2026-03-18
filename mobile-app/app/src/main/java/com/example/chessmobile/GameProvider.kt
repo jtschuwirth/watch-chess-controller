@@ -2,7 +2,6 @@ package com.example.chessmobile
 
 import android.content.Context
 import android.util.Log
-import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,6 +31,21 @@ sealed class ProviderConfig {
 }
 
 /**
+ * Callbacks injected by the game layer into each provider.
+ * Providers call these instead of touching MoveRepository directly.
+ *
+ * [onOpponentMove] — opponent has played; [sendToWatch] is true when the move originated
+ *   externally (Lichess stream, random opening move) and the watch needs to be notified.
+ *   It is false when the watch itself initiated the flow and already handles the response inline.
+ */
+interface GameProviderCallbacks {
+    fun onOpponentMove(san: String, sendToWatch: Boolean)
+    fun onGameEnded(status: String, winner: String?)
+    fun onColorAssigned(color: ChessColor)
+    fun onHistoryRestored(entries: List<MoveEntry>)
+}
+
+/**
  * Abstraction for a game opponent.
  *
  * [onPlayerMove] is called when the player submits a move from the watch. It is responsible
@@ -46,11 +60,30 @@ sealed class ProviderConfig {
  */
 interface GameProvider {
     val name: String
+
+    /**
+     * If true, the provider submits the player's move to an external system (e.g. Lichess API)
+     * and no accessibility tap is needed. If false, the game layer must execute the move locally
+     * via ChessAccessibilityService.
+     */
+    val executesMovesExternally: Boolean get() = false
+
+    /** Called by the game layer immediately before [onGameStart] and [onGameResume]. */
+    fun setCallbacks(callbacks: GameProviderCallbacks) {}
+
     fun onPlayerMove(san: String, context: Context, callback: (opponentMove: String?, error: String?) -> Unit)
     fun onGameStart(config: ProviderConfig, context: Context) {}
     fun onGameEnd() {}
     fun onGamePause() {}
-    fun onGameResume(context: Context) {}
+
+    /**
+     * [savedMoves] contains the move history at the time of pause.
+     * Providers without an authoritative history source (e.g. RandomMoves) should call
+     * callbacks.onHistoryRestored(savedMoves). Providers that rebuild from a stream (Lichess)
+     * can ignore it.
+     */
+    fun onGameResume(context: Context, savedMoves: List<MoveEntry>) {}
+
     fun onResign(context: Context) {}
     fun onDrawOffer(context: Context) {}
 }
@@ -62,7 +95,10 @@ interface GameProvider {
 object RandomMovesProvider : GameProvider {
     override val name = "Random Moves"
 
+    private var callbacks: GameProviderCallbacks? = null
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    override fun setCallbacks(c: GameProviderCallbacks) { callbacks = c }
 
     override fun onPlayerMove(san: String, context: Context, callback: (String?, String?) -> Unit) {
         scope.launch {
@@ -78,7 +114,8 @@ object RandomMovesProvider : GameProvider {
         val cfg = config as? ProviderConfig.RandomMoves ?: return
         val playerColor = resolveColor(cfg.color)
         if (playerColor == ChessColor.BLACK) {
-            MoveRepository.triggerRandomFirstMove(context)
+            val openingMoves = listOf("e4", "d4", "c4")
+            callbacks?.onOpponentMove(openingMoves.random(), sendToWatch = true)
         }
     }
 
@@ -87,14 +124,18 @@ object RandomMovesProvider : GameProvider {
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     }
 
+    override fun onGameResume(context: Context, savedMoves: List<MoveEntry>) {
+        callbacks?.onHistoryRestored(savedMoves)
+    }
+
     override fun onResign(context: Context) {
         val gameInfo = MoveRepository.gameInfo.value ?: return
         val opponentSide = if (gameInfo.playerColor == ChessColor.WHITE) "black" else "white"
-        MoveRepository.endGameWithResult("resign", opponentSide, context)
+        callbacks?.onGameEnded("resign", opponentSide)
     }
 
     override fun onDrawOffer(context: Context) {
-        MoveRepository.endGameWithResult("draw", null, context)
+        callbacks?.onGameEnded("draw", null)
     }
 }
 
@@ -105,7 +146,9 @@ object RandomMovesProvider : GameProvider {
 class LichessProvider : GameProvider {
 
     override val name = "Lichess"
+    override val executesMovesExternally: Boolean get() = true
 
+    private var callbacks: GameProviderCallbacks? = null
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var apiKey: String = ""
     private var gameId: String? = null
@@ -117,6 +160,8 @@ class LichessProvider : GameProvider {
     private var streamJob: Job? = null
     @Volatile private var streamConnection: HttpURLConnection? = null
     private var appContext: Context? = null
+
+    override fun setCallbacks(c: GameProviderCallbacks) { callbacks = c }
 
     override fun onGameStart(config: ProviderConfig, context: Context) {
         val cfg = config as? ProviderConfig.Lichess ?: return
@@ -163,11 +208,10 @@ class LichessProvider : GameProvider {
 
                 // For RANDOM games, the API response tells us which color was assigned —
                 // update the repository and notify the watch if it differs from the placeholder.
-                val ctx = appContext ?: return@launch
                 if (cfg.color == ColorChoice.RANDOM) {
                     val currentInfo = MoveRepository.gameInfo.value
                     if (currentInfo != null && currentInfo.playerColor != result.playerColor) {
-                        MoveRepository.updateGameColor(result.playerColor, ctx)
+                        callbacks?.onColorAssigned(result.playerColor)
                     }
                 }
 
@@ -187,8 +231,7 @@ class LichessProvider : GameProvider {
                         handleGameState(moves)
                     },
                     onGameEnd = { status, winner ->
-                        val ctx = appContext ?: return@streamGame
-                        MoveRepository.endGameWithResult(status, winner, ctx)
+                        callbacks?.onGameEnded(status, winner)
                     },
                     onError = { e ->
                         Log.e("LichessProvider", "Stream error: ${e.message}")
@@ -288,7 +331,7 @@ class LichessProvider : GameProvider {
      * (provider instance was kept in memory) and cold resumes (new instance after app restart).
      * On stream failure the session is cleared and a game-over result is reported.
      */
-    override fun onGameResume(context: Context) {
+    override fun onGameResume(context: Context, savedMoves: List<MoveEntry>) {
         appContext = context.applicationContext
 
         // Load API key if this is a cold-start (fresh provider instance)
@@ -334,13 +377,13 @@ class LichessProvider : GameProvider {
             onGameEnd = { status, winner ->
                 val ctx = appContext ?: return@streamGame
                 GameSessionStore.clearLichessSession(ctx)
-                MoveRepository.endGameWithResult(status, winner, ctx)
+                callbacks?.onGameEnded(status, winner)
             },
             onError = { e ->
                 Log.e("LichessProvider", "Stream resume error: ${e.message}")
                 val ctx = appContext ?: return@streamGame
                 GameSessionStore.clearLichessSession(ctx)
-                MoveRepository.endGameWithResult("finish", null, ctx)
+                callbacks?.onGameEnded("finish", null)
             }
         )
     }
@@ -406,7 +449,7 @@ class LichessProvider : GameProvider {
                 ))
                 i += 2
             }
-            MoveRepository.restoreHistory(entries)
+            callbacks?.onHistoryRestored(entries)
             return
         }
 
@@ -417,17 +460,7 @@ class LichessProvider : GameProvider {
 
     private fun onOpponentMoved(san: String, uci: String) {
         Log.d("LichessProvider", "Opponent played: $uci (SAN: $san)")
-        MoveRepository.recordOpponentMove(san)
-        MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
-
-        // Forward the opponent's move to the watch in SAN for display
-        val ctx = appContext ?: return
-        Wearable.getNodeClient(ctx).connectedNodes.addOnSuccessListener { nodes ->
-            nodes.forEach { node ->
-                Wearable.getMessageClient(ctx)
-                    .sendMessage(node.id, "/chess/move", san.toByteArray(Charsets.UTF_8))
-            }
-        }
+        callbacks?.onOpponentMove(san, sendToWatch = true)
     }
 }
 
