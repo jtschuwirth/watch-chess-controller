@@ -417,16 +417,8 @@ class LichessProvider : GameProvider {
 
     private fun onOpponentMoved(san: String, uci: String) {
         Log.d("LichessProvider", "Opponent played: $uci (SAN: $san)")
-        // Entry model invariant: move=White's half, response=Black's half (for both colors).
-        // Black player: opponent (White) always starts a new entry via addMove.
-        // White player: opponent (Black) fills the response of the player's existing entry.
-        if (playerColor == ChessColor.BLACK) {
-            MoveRepository.addMove(san)
-            MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
-        } else {
-            MoveRepository.setLastMoveResponse(san)
-            MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
-        }
+        MoveRepository.recordOpponentMove(san)
+        MoveRepository.updateLastMoveStatus(MoveStatus.EXECUTED)
 
         // Forward the opponent's move to the watch in SAN for display
         val ctx = appContext ?: return

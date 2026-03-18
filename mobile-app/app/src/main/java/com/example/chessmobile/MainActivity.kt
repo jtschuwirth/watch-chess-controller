@@ -56,6 +56,9 @@ class MainActivity : ComponentActivity() {
         // Restore any Lichess session that survived a previous app process death
         MoveRepository.loadPersistedSessions(this)
 
+        // Initialize TTS engine early so it's ready when a game starts
+        MoveRepository.initTts(this)
+
         setContent {
             MaterialTheme {
                 ChessMobileScreen()
@@ -75,6 +78,7 @@ fun ChessMobileScreen() {
     val phoneInputError by MoveRepository.phoneInputError.collectAsStateWithLifecycle()
     val navigateToHome by MoveRepository.navigateToHome.collectAsStateWithLifecycle()
     val resumableSessions by MoveRepository.resumableSessions.collectAsStateWithLifecycle()
+    val isTtsEnabled by MoveRepository.isTtsEnabled.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val keyboardViewModel: MobileKeyboardViewModel = viewModel()
@@ -118,7 +122,19 @@ fun ChessMobileScreen() {
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("Chess Move Log") })
+            TopAppBar(
+                title = { Text("Chess Move Log") },
+                actions = {
+                    if (currentScreen == AppScreen.IN_GAME) {
+                        TextButton(onClick = { MoveRepository.toggleTts() }) {
+                            Text(
+                                text = if (isTtsEnabled) "Audio: ON" else "Audio: OFF",
+                                color = if (isTtsEnabled) Color(0xFF2E7D32) else Color(0xFFB71C1C)
+                            )
+                        }
+                    }
+                }
+            )
         }
     ) { padding ->
         Column(

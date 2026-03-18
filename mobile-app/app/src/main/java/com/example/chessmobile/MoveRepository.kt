@@ -1,6 +1,7 @@
 package com.example.chessmobile
 
 import android.content.Context
+import android.speech.tts.TextToSpeech
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -81,6 +82,90 @@ object MoveRepository {
     private val _navigateToHome = MutableStateFlow(false)
     val navigateToHome: StateFlow<Boolean> = _navigateToHome.asStateFlow()
 
+    private val _isTtsEnabled = MutableStateFlow(false)
+    val isTtsEnabled: StateFlow<Boolean> = _isTtsEnabled.asStateFlow()
+
+    private var tts: TextToSpeech? = null
+
+    fun initTts(context: Context) {
+        if (tts != null) return
+        tts = TextToSpeech(context.applicationContext) { status ->
+            if (status == TextToSpeech.ERROR) tts = null
+        }
+    }
+
+    fun toggleTts() {
+        _isTtsEnabled.value = !_isTtsEnabled.value
+    }
+
+    private fun speakIfEnabled(move: String) {
+        if (_isTtsEnabled.value) {
+            tts?.speak(sanToSpoken(move), TextToSpeech.QUEUE_FLUSH, null, null)
+        }
+    }
+
+    /**
+     * Records an opponent move in the move log and announces it via TTS if enabled.
+     * This is the single entry point for all opponent moves regardless of provider.
+     * For Black player: opponent (White) starts a new entry via addMove.
+     * For White player: opponent (Black) fills the response of the player's entry.
+     */
+    fun recordOpponentMove(san: String) {
+        val isBlackPlayer = gameInfo.value?.playerColor == ChessColor.BLACK
+        if (isBlackPlayer) {
+            addMove(san)
+        } else {
+            setLastMoveResponse(san)
+        }
+        speakIfEnabled(san)
+    }
+
+    fun sanToSpoken(san: String): String {
+        if (san.startsWith("O-O-O") || san.startsWith("0-0-0")) return "Queenside castle"
+        if (san.startsWith("O-O") || san.startsWith("0-0")) return "Kingside castle"
+
+        var s = san
+
+        val suffix = when {
+            s.endsWith("#") -> { s = s.dropLast(1); ", checkmate" }
+            s.endsWith("+") -> { s = s.dropLast(1); ", check" }
+            else -> ""
+        }
+
+        val promotionPiece: Char?
+        if (s.contains('=')) {
+            promotionPiece = s.substringAfter("=").firstOrNull()
+            s = s.substringBefore("=")
+        } else {
+            promotionPiece = null
+        }
+
+        val captures = s.contains('x')
+        s = s.replace("x", "")
+
+        val piece = when (s.firstOrNull()) {
+            'K' -> "King"
+            'Q' -> "Queen"
+            'R' -> "Rook"
+            'B' -> "Bishop"
+            'N' -> "Knight"
+            else -> "Pawn"
+        }
+
+        val dest = if (s.length >= 2) s.takeLast(2) else s
+
+        val promotionStr = if (promotionPiece != null) {
+            val pieceName = when (promotionPiece) {
+                'Q' -> "Queen"; 'R' -> "Rook"; 'B' -> "Bishop"; 'N' -> "Knight"
+                else -> promotionPiece.toString()
+            }
+            ", promotes to $pieceName"
+        } else ""
+
+        val verb = if (captures) "captures" else "to"
+        return "$piece $verb $dest$promotionStr$suffix"
+    }
+
     // Paused sessions: in-memory sessions the user navigated away from mid-game
     private val _pausedSessions = MutableStateFlow<Map<String, GameSession>>(emptyMap())
 
@@ -156,6 +241,7 @@ object MoveRepository {
         _gameInfo.value = GameInfo(playerColor, provider.name)
         _moves.value = emptyList()
         _lastStatus.value = "Game started. You are playing as ${playerColor.name}."
+        initTts(context)
         startForegroundService(context)
         // Tell the watch which color the player is — this activates the keyboard on the watch
         val colorChar = if (playerColor == ChessColor.WHITE) "W" else "B"
@@ -256,6 +342,7 @@ object MoveRepository {
             provider.onGameResume(context)
         }
 
+        initTts(context)
         startForegroundService(context)
 
         // Notify watch that the game is active again
@@ -370,7 +457,7 @@ object MoveRepository {
         val openingMoves = listOf("e4", "d4", "c4")
         val randomMove = openingMoves.random()
         Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
-            addMove(randomMove)
+            recordOpponentMove(randomMove)
             nodes.forEach { node ->
                 // game/start was already sent by startGame(); just send the opening move
                 Wearable.getMessageClient(context)
@@ -413,14 +500,8 @@ object MoveRepository {
                     return@onPlayerMove
                 }
                 if (opponentMove != null) {
-                    // For Black player, the opponent's reply is White's next move → new entry.
-                    // For White player, the opponent's reply is Black's response → fill response.
-                    if (isBlackPlayer) {
-                        addMove(opponentMove)
-                        updateLastMoveStatus(MoveStatus.EXECUTED)
-                    } else {
-                        setLastMoveResponse(opponentMove)
-                    }
+                    recordOpponentMove(opponentMove)
+                    if (isBlackPlayer) updateLastMoveStatus(MoveStatus.EXECUTED)
                 }
                 if (provider is LichessProvider) {
                     updateLastMoveStatus(MoveStatus.EXECUTED)
