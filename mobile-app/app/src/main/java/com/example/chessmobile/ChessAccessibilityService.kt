@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -59,20 +61,31 @@ class ChessAccessibilityService : AccessibilityService() {
     fun executeMove(move: String) {
         Log.d(TAG, "Executing move: $move")
 
+        // Wake the screen so gestures can land even when the phone is locked
+        val fgService = ChessGameForegroundService.instance
+        fgService?.acquireScreenWakeLock()
+
         val boardNode = findChessBoardNode()
         if (boardNode == null) {
             Log.w(TAG, "Chess board not found in current screen")
             MoveRepository.updateLastMoveStatus(MoveStatus.FAILED, "Chess board not visible on screen.")
+            fgService?.releaseScreenWakeLock()
             return
         }
 
         val squares = parseMovesToSquares(move) ?: run {
             Log.w(TAG, "Could not parse squares from move: $move")
             MoveRepository.updateLastMoveStatus(MoveStatus.FAILED, "Could not parse move: $move")
+            fgService?.releaseScreenWakeLock()
             return
         }
 
         tapSquares(boardNode, squares)
+
+        // Release the screen wake lock after gesture dispatch + processing buffer
+        Handler(Looper.getMainLooper()).postDelayed({
+            fgService?.releaseScreenWakeLock()
+        }, 2500L)
     }
 
     /** Walks the window hierarchy looking for the chess board view. */

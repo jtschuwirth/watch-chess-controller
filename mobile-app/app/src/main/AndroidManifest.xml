@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -31,6 +34,12 @@
                     android:scheme="wear" />
             </intent-filter>
         </service>
+
+        <!-- Foreground service that keeps the app alive while a game is active -->
+        <service
+            android:name=".ChessGameForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
 
         <!-- Accessibility service for automating Chess.com / Lichess -->
         <service

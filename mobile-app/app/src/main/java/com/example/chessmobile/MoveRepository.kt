@@ -91,6 +91,18 @@ object MoveRepository {
     private val _resumableSessions = MutableStateFlow<Map<String, ResumableSession>>(emptyMap())
     val resumableSessions: StateFlow<Map<String, ResumableSession>> = _resumableSessions.asStateFlow()
 
+    private fun startForegroundService(context: Context) {
+        context.startForegroundService(
+            android.content.Intent(context, ChessGameForegroundService::class.java)
+        )
+    }
+
+    private fun stopForegroundService(context: Context) {
+        context.stopService(
+            android.content.Intent(context, ChessGameForegroundService::class.java)
+        )
+    }
+
     private fun updateResumableSessions() {
         val result = mutableMapOf<String, ResumableSession>()
         result.putAll(_storedSessions.value)
@@ -144,6 +156,7 @@ object MoveRepository {
         _gameInfo.value = GameInfo(playerColor, provider.name)
         _moves.value = emptyList()
         _lastStatus.value = "Game started. You are playing as ${playerColor.name}."
+        startForegroundService(context)
         // Tell the watch which color the player is — this activates the keyboard on the watch
         val colorChar = if (playerColor == ChessColor.WHITE) "W" else "B"
         Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
@@ -161,6 +174,7 @@ object MoveRepository {
         _gameInfo.value = null
         _lastStatus.value = null
         _gameResult.value = null
+        stopForegroundService(context)
         // Tell the watch the game is over so it hides the keyboard and resets its state
         Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
             nodes.forEach { node ->
@@ -195,6 +209,7 @@ object MoveRepository {
         _gameInfo.value = null
         _lastStatus.value = null
         _moves.value = emptyList()
+        stopForegroundService(context)
 
         // Tell the watch the game is paused
         Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
@@ -241,6 +256,8 @@ object MoveRepository {
             provider.onGameResume(context)
         }
 
+        startForegroundService(context)
+
         // Notify watch that the game is active again
         val colorChar = if (_gameInfo.value?.playerColor == ChessColor.WHITE) "W" else "B"
         Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
@@ -273,6 +290,7 @@ object MoveRepository {
         _activeProvider.value = null
         _gameResult.value = resultMsg
         _lastStatus.value = resultMsg
+        stopForegroundService(context)
         // _gameInfo is left intact — cleared when the user dismisses the result screen
         val payload = resultMsg.toByteArray(Charsets.UTF_8)
         Wearable.getNodeClient(context).connectedNodes.addOnSuccessListener { nodes ->
