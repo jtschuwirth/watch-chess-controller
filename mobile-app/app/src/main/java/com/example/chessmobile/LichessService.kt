@@ -45,7 +45,8 @@ object LichessService {
         level: Int,
         color: String,
         clockLimitSeconds: Int? = 600,
-        clockIncrement: Int = 0
+        clockIncrement: Int = 0,
+        fen: String? = null
     ): GameStartResult = withContext(Dispatchers.IO) {
         val url = URL("$BASE/api/challenge/ai")
         val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -57,10 +58,11 @@ object LichessService {
             doOutput = true
         }
 
+        val fenPart = if (fen != null) "&fen=${java.net.URLEncoder.encode(fen, "UTF-8")}" else ""
         val body = if (clockLimitSeconds != null) {
-            "level=$level&color=$color&clock.limit=$clockLimitSeconds&clock.increment=$clockIncrement"
+            "level=$level&color=$color&clock.limit=$clockLimitSeconds&clock.increment=$clockIncrement$fenPart"
         } else {
-            "level=$level&color=$color"
+            "level=$level&color=$color$fenPart"
         }
         conn.outputStream.use { it.write(body.toByteArray()) }
 

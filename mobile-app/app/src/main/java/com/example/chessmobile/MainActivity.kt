@@ -29,11 +29,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.android.gms.wearable.Wearable
 
-enum class AppScreen { PROVIDER_SELECTION, PROVIDER_CONFIG, IN_GAME, GAME_RESULT }
+enum class AppScreen { PROVIDER_SELECTION, PROVIDER_CONFIG, IN_GAME, GAME_RESULT, SAVED_POSITIONS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -197,7 +201,8 @@ fun ChessMobileScreen() {
                                     MoveRepository.startGame(config, provider, context)
                                     currentScreen = AppScreen.IN_GAME
                                 },
-                                onBack = { currentScreen = AppScreen.PROVIDER_SELECTION }
+                                onBack = { currentScreen = AppScreen.PROVIDER_SELECTION },
+                                onManagePositions = { currentScreen = AppScreen.SAVED_POSITIONS }
                             )
                         }
                         else -> { currentScreen = AppScreen.PROVIDER_SELECTION }
@@ -215,6 +220,10 @@ fun ChessMobileScreen() {
                         },
                         modifier = Modifier.weight(1f)
                     )
+                }
+
+                AppScreen.SAVED_POSITIONS -> {
+                    SavedPositionsScreen(onBack = { currentScreen = AppScreen.PROVIDER_CONFIG })
                 }
 
                 AppScreen.IN_GAME -> {
@@ -459,10 +468,12 @@ fun RandomMovesConfigScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LichessConfigScreen(
     onStart: (ProviderConfig.Lichess) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onManagePositions: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -481,8 +492,73 @@ fun LichessConfigScreen(
     var colorChoice by remember { mutableStateOf(ColorChoice.WHITE) }
     var timeControl by remember { mutableStateOf(TimeControl.TEN_MIN) }
 
+    // Starting position
+    var savedPositions by remember { mutableStateOf(SavedPositionsStore.getAll(context)) }
+    var selectedPosition by remember { mutableStateOf<SavedPosition?>(null) }
+    var positionDropdownExpanded by remember { mutableStateOf(false) }
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Lichess — Setup", style = MaterialTheme.typography.titleMedium)
+
+        // Starting position selector
+        Text("Starting position:", style = MaterialTheme.typography.bodyMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ExposedDropdownMenuBox(
+                expanded = positionDropdownExpanded,
+                onExpandedChange = {
+                    savedPositions = SavedPositionsStore.getAll(context)
+                    positionDropdownExpanded = it
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                OutlinedTextField(
+                    value = selectedPosition?.name ?: "Default Position",
+                    onValueChange = {},
+                    readOnly = true,
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = positionDropdownExpanded) },
+                    modifier = Modifier
+                        .menuAnchor()
+                        .fillMaxWidth()
+                )
+                ExposedDropdownMenu(
+                    expanded = positionDropdownExpanded,
+                    onDismissRequest = { positionDropdownExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Default Position") },
+                        onClick = {
+                            selectedPosition = null
+                            positionDropdownExpanded = false
+                        }
+                    )
+                    savedPositions.forEach { pos ->
+                        DropdownMenuItem(
+                            text = { Text(pos.name) },
+                            onClick = {
+                                selectedPosition = pos
+                                positionDropdownExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+            TextButton(onClick = onManagePositions) {
+                Text("Manage")
+            }
+        }
+        if (selectedPosition != null) {
+            Text(
+                "FEN: ${selectedPosition!!.fen.take(50)}${if (selectedPosition!!.fen.length > 50) "…" else ""}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        HorizontalDivider()
 
         // API key section
         Text("API Token:", style = MaterialTheme.typography.bodyMedium)
@@ -606,7 +682,7 @@ fun LichessConfigScreen(
                 Text("Back")
             }
             Button(
-                onClick = { onStart(ProviderConfig.Lichess(selectedLevel, colorChoice, timeControl)) },
+                onClick = { onStart(ProviderConfig.Lichess(selectedLevel, colorChoice, timeControl, selectedPosition?.fen)) },
                 enabled = apiKeySaved,
                 modifier = Modifier.weight(1f)
             ) {
@@ -619,6 +695,103 @@ fun LichessConfigScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error
             )
+        }
+    }
+}
+
+@Composable
+fun SavedPositionsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    var positions by remember { mutableStateOf(SavedPositionsStore.getAll(context)) }
+    var nameInput by remember { mutableStateOf("") }
+    var fenInput by remember { mutableStateOf("") }
+    var errorText by remember { mutableStateOf<String?>(null) }
+
+    fun isValidFen(fen: String): Boolean {
+        val parts = fen.trim().split(" ")
+        if (parts.size < 2) return false
+        val rows = parts[0].split("/")
+        return rows.size == 8
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Saved Positions", style = MaterialTheme.typography.titleMedium)
+
+        HorizontalDivider()
+
+        Text("Add position:", style = MaterialTheme.typography.bodyMedium)
+        OutlinedTextField(
+            value = nameInput,
+            onValueChange = { nameInput = it; errorText = null },
+            label = { Text("Name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = fenInput,
+            onValueChange = { fenInput = it; errorText = null },
+            label = { Text("FEN string") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (errorText != null) {
+            Text(errorText!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Button(
+            onClick = {
+                when {
+                    nameInput.isBlank() -> errorText = "Name cannot be empty."
+                    fenInput.isBlank() -> errorText = "FEN cannot be empty."
+                    !isValidFen(fenInput) -> errorText = "Invalid FEN — must have 8 ranks separated by '/' and at least 2 space-separated fields."
+                    SavedPositionsStore.nameExists(context, nameInput.trim()) -> errorText = "A position with that name already exists."
+                    else -> {
+                        SavedPositionsStore.save(context, SavedPosition(nameInput.trim(), fenInput.trim()))
+                        positions = SavedPositionsStore.getAll(context)
+                        nameInput = ""
+                        fenInput = ""
+                        errorText = null
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Add Position")
+        }
+
+        HorizontalDivider()
+
+        if (positions.isEmpty()) {
+            Text(
+                "No saved positions yet.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            positions.forEach { pos ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(pos.name, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "${pos.fen.take(40)}${if (pos.fen.length > 40) "…" else ""}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = {
+                        SavedPositionsStore.delete(context, pos.name)
+                        positions = SavedPositionsStore.getAll(context)
+                    }) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Delete ${pos.name}")
+                    }
+                }
+            }
+        }
+
+        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+            Text("Back")
         }
     }
 }

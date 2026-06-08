@@ -49,6 +49,49 @@ class ChessBoard {
         enPassantSquare = null
     }
 
+    fun resetToFen(fen: String) {
+        val parts = fen.trim().split(" ")
+        if (parts.size < 2) { reset(); return }
+
+        // Clear board
+        for (r in 0..7) for (f in 0..7) board[r][f] = null
+
+        // Piece placement: FEN rank 8 = board rank 7 (index 7), rank 1 = index 0
+        val rows = parts[0].split("/")
+        if (rows.size == 8) {
+            for (rankIdx in 0..7) {
+                val fenRow = rows[7 - rankIdx] // FEN starts from rank 8
+                var file = 0
+                for (ch in fenRow) {
+                    if (file > 7) break
+                    if (ch.isDigit()) {
+                        file += ch.digitToInt()
+                    } else {
+                        val color = if (ch.isUpperCase()) ChessColor.WHITE else ChessColor.BLACK
+                        val type = when (ch.lowercaseChar()) {
+                            'p' -> PieceType.PAWN
+                            'n' -> PieceType.KNIGHT
+                            'b' -> PieceType.BISHOP
+                            'r' -> PieceType.ROOK
+                            'q' -> PieceType.QUEEN
+                            'k' -> PieceType.KING
+                            else -> null
+                        }
+                        if (type != null) board[rankIdx][file] = Piece(type, color)
+                        file++
+                    }
+                }
+            }
+        }
+
+        activeColor = if (parts[1] == "b") ChessColor.BLACK else ChessColor.WHITE
+
+        // En passant square (field 4, index 3)
+        enPassantSquare = if (parts.size >= 4 && parts[3] != "-" && parts[3].length == 2) {
+            try { Square.of(parts[3]) } catch (e: Exception) { null }
+        } else null
+    }
+
     fun get(file: Int, rank: Int): Piece? = board[rank][file]
 
     // -------------------------------------------------------------------------

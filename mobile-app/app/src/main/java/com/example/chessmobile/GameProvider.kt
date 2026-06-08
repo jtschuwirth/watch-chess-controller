@@ -26,7 +26,8 @@ sealed class ProviderConfig {
     data class Lichess(
         val level: Int,
         val color: ColorChoice = ColorChoice.WHITE,
-        val timeControl: TimeControl = TimeControl.TEN_MIN
+        val timeControl: TimeControl = TimeControl.TEN_MIN,
+        val startingFen: String? = null
     ) : ProviderConfig()
 }
 
@@ -172,8 +173,14 @@ class LichessBotProvider : GameProvider {
     private var streamJob: Job? = null
     @Volatile private var streamConnection: HttpURLConnection? = null
     private var appContext: Context? = null
+    @Volatile private var startingFen: String? = null
 
     override fun setCallbacks(c: GameProviderCallbacks) { callbacks = c }
+
+    private fun boardReset() {
+        val fen = startingFen
+        if (fen != null) board.resetToFen(fen) else board.reset()
+    }
 
     override fun onGameStart(config: ProviderConfig, context: Context) {
         val cfg = config as? ProviderConfig.Lichess ?: return
@@ -184,6 +191,7 @@ class LichessBotProvider : GameProvider {
         appContext = context.applicationContext
         // Clear any stale persisted session — we are starting fresh
         GameSessionStore.clearLichessSession(context)
+        startingFen = cfg.startingFen
 
         if (!scope.isActive) {
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -202,7 +210,8 @@ class LichessBotProvider : GameProvider {
                     level = cfg.level,
                     color = colorStr,
                     clockLimitSeconds = cfg.timeControl.limitSeconds,
-                    clockIncrement = cfg.timeControl.increment
+                    clockIncrement = cfg.timeControl.increment,
+                    fen = cfg.startingFen
                 )
                 gameId = result.gameId
                 // When the user explicitly chose a color, trust that choice over the API
@@ -215,7 +224,7 @@ class LichessBotProvider : GameProvider {
                 } else {
                     resolveColor(cfg.color)
                 }
-                board.reset()
+                boardReset()
                 lastKnownMoveCount = 0
 
                 // For RANDOM games, the API response tells us which color was assigned —
@@ -394,7 +403,7 @@ class LichessBotProvider : GameProvider {
         if (!scope.isActive) {
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         }
-        synchronized(board) { board.reset() }
+        synchronized(board) { boardReset() }
         lastKnownMoveCount = 0
         needsHistoryRebuild = true
 
@@ -433,7 +442,7 @@ class LichessBotProvider : GameProvider {
 
     private fun handleGameState(moves: String) {
         if (moves.isBlank()) {
-            synchronized(board) { board.reset() }
+            synchronized(board) { boardReset() }
             lastKnownMoveCount = 0
             return
         }
@@ -461,7 +470,7 @@ class LichessBotProvider : GameProvider {
         // On resume we need all SANs to rebuild the move history; otherwise just the last.
         val allSans = if (needsHistoryRebuild) mutableListOf<String>() else null
         synchronized(board) {
-            board.reset()
+            boardReset()
             for (i in 0 until newCount - 1) {
                 allSans?.add(board.uciToSan(uciList[i]))
                 board.applyUci(uciList[i])
