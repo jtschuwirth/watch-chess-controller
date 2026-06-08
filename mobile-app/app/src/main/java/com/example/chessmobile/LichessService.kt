@@ -206,6 +206,7 @@ object LichessService {
                         "gameFull" -> {
                             val state = json.optJSONObject("state")
                             val moves = state?.optString("moves") ?: ""
+                            val stateStatus = state?.optString("status", "started") ?: "started"
                             // The gameFull event has no top-level "color" field.
                             // Determine the player's color by checking which side is the AI
                             // (aiLevel is present on the AI's player object).
@@ -217,6 +218,16 @@ object LichessService {
                                 else -> "white"
                             }
                             onGameFull(moves, color)
+                            // If the game was already over when we (re)connected, Lichess closes
+                            // the stream after gameFull with no subsequent gameState event.
+                            // Detect the terminal status here so callers can show the result
+                            // screen rather than getting stuck waiting for a move that never arrives.
+                            if (stateStatus != "started" && stateStatus != "created") {
+                                val winner = state?.optString("winner", "")?.ifEmpty { null }
+                                Log.d(TAG, "Game already finished at connect: status=$stateStatus winner=$winner")
+                                onGameEnd(stateStatus, winner)
+                                break
+                            }
                         }
                         "gameState" -> {
                             val moves = json.optString("moves", "")

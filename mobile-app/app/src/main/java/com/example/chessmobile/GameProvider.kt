@@ -43,6 +43,7 @@ interface GameProviderCallbacks {
     fun onGameEnded(status: String, winner: String?)
     fun onColorAssigned(color: ChessColor)
     fun onHistoryRestored(entries: List<MoveEntry>)
+    fun onGameStartFailed(error: String)
 }
 
 /**
@@ -86,6 +87,16 @@ interface GameProvider {
 
     fun onResign(context: Context) {}
     fun onDrawOffer(context: Context) {}
+
+    /** Returns a serialized board state string, or "UNAVAILABLE" if not supported by the provider. */
+    fun getBoardState(): String = "UNAVAILABLE"
+
+    /**
+     * Called by the game layer when it suspects a stream event was missed and the opponent's
+     * move has not arrived after 5 seconds. The provider should reconnect or re-fetch to
+     * deliver the latest state. Default no-op — only async providers override this.
+     */
+    fun requestMoveUpdate() {}
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +168,7 @@ class LichessBotProvider : GameProvider {
     @Volatile private var lastKnownMoveCount = 0
     @Volatile private var pendingMoveCallback: ((String?, String?) -> Unit)? = null
     @Volatile private var needsHistoryRebuild = false
+    @Volatile private var isReconnecting = false
     private var streamJob: Job? = null
     @Volatile private var streamConnection: HttpURLConnection? = null
     private var appContext: Context? = null
@@ -239,10 +251,7 @@ class LichessBotProvider : GameProvider {
                 )
             } catch (e: Exception) {
                 Log.e("LichessBotProvider", "Failed to start Lichess game: ${e.message}")
-                MoveRepository.updateLastMoveStatus(
-                    MoveStatus.FAILED,
-                    "Failed to start Lichess game: ${e.message?.take(40)}"
-                )
+                callbacks?.onGameStartFailed(e.message ?: "Unknown error")
             }
         }
     }
@@ -300,6 +309,8 @@ class LichessBotProvider : GameProvider {
         }
     }
 
+    override fun getBoardState(): String = synchronized(board) { board.getBoardStateSerialized() }
+
     override fun onGameEnd() {
         streamConnection?.disconnect()  // Unblocks the readLine() call in the stream coroutine
         streamJob?.cancel()
@@ -353,7 +364,33 @@ class LichessBotProvider : GameProvider {
             stored.gameId ?: return
         }
 
-        // Fresh scope and board for the reconnected stream
+        reconnectStream(gId, onStreamError = { e ->
+            Log.e("LichessBotProvider", "Stream resume error: ${e.message}")
+            val ctx = appContext ?: return@reconnectStream
+            GameSessionStore.clearLichessSession(ctx)
+            callbacks?.onGameEnded("finish", null)
+        })
+    }
+
+    /**
+     * Called by the game layer when the opponent's move has not arrived after 5 seconds,
+     * suggesting a stream event was missed. Reconnects the stream so Lichess re-delivers
+     * the full game state via a gameFull event.
+     */
+    override fun requestMoveUpdate() {
+        val gId = gameId ?: return
+        isReconnecting = true
+        reconnectStream(gId)  // log-only error handler — poll failure does not end the game
+    }
+
+    /**
+     * Reconnects the Lichess NDJSON stream. Cancels any existing stream first, then opens a
+     * fresh connection. The gameFull event will deliver the authoritative board state.
+     * [onStreamError] is invoked on IOException; if null, the error is only logged.
+     */
+    private fun reconnectStream(gId: String, onStreamError: ((Exception) -> Unit)? = null) {
+        streamConnection?.disconnect()
+        streamJob?.cancel()
         if (!scope.isActive) {
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         }
@@ -367,8 +404,12 @@ class LichessBotProvider : GameProvider {
             gameId = gId,
             onConnected = { conn -> streamConnection = conn },
             onGameFull = { initialMoves, _ ->
+                isReconnecting = false
                 if (initialMoves.isNotEmpty()) {
                     handleGameState(initialMoves)
+                } else {
+                    needsHistoryRebuild = false
+                    callbacks?.onHistoryRestored(emptyList())
                 }
             },
             onGameState = { moves ->
@@ -380,10 +421,8 @@ class LichessBotProvider : GameProvider {
                 callbacks?.onGameEnded(status, winner)
             },
             onError = { e ->
-                Log.e("LichessBotProvider", "Stream resume error: ${e.message}")
-                val ctx = appContext ?: return@streamGame
-                GameSessionStore.clearLichessSession(ctx)
-                callbacks?.onGameEnded("finish", null)
+                onStreamError?.invoke(e)
+                    ?: Log.e("LichessBotProvider", "Stream reconnect error: ${e.message}")
             }
         )
     }
@@ -459,6 +498,10 @@ class LichessBotProvider : GameProvider {
     }
 
     private fun onOpponentMoved(san: String, uci: String) {
+        if (isReconnecting) {
+            Log.d("LichessBotProvider", "Skipping opponent move during reconnect: $uci")
+            return
+        }
         Log.d("LichessBotProvider", "Opponent played: $uci (SAN: $san)")
         callbacks?.onOpponentMove(san, sendToWatch = true)
     }

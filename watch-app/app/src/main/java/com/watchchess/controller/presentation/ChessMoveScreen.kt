@@ -68,6 +68,8 @@ private const val PATH_CHESS_RESIGN = "/chess/resign"
 private const val PATH_CHESS_DRAW_OFFER = "/chess/draw/offer"
 private const val PATH_CHESS_HOME = "/chess/home"
 private const val PATH_CHESS_PHONE_MOVE = "/chess/phone/move"
+private const val PATH_BOARD_REQUEST = "/chess/board/request"
+private const val PATH_BOARD_RESPONSE = "/chess/board/response"
 
 class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
     private val _uiState = MutableStateFlow(MoveInputState())
@@ -126,6 +128,11 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
                 Log.d("ChessMoveViewModel", "Phone keyboard move: '$move'")
                 _uiState.update { it.addPlayerMove(move) }
             }
+            PATH_BOARD_RESPONSE -> {
+                val payload = String(event.data, Charsets.UTF_8).trim()
+                Log.d("ChessMoveViewModel", "Board state received")
+                _uiState.update { it.copy(boardState = payload) }
+            }
         }
     }
 
@@ -163,6 +170,15 @@ class ChessMoveViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onOfferDraw() {
         viewModelScope.launch { sendToPhone(PATH_CHESS_DRAW_OFFER, "") }
+    }
+
+    fun onRequestBoard() {
+        _uiState.update { it.copy(boardState = null, showBoardView = true) }
+        viewModelScope.launch { sendToPhone(PATH_BOARD_REQUEST, "") }
+    }
+
+    fun onDismissBoardView() {
+        _uiState.update { it.copy(showBoardView = false) }
     }
 
     /**
@@ -245,6 +261,16 @@ private val ColorOpponentTurn = Color(0xFF37474F)    // slate – opponent's tur
 @Composable
 fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsState()
+
+    if (state.showBoardView) {
+        BoardViewScreen(
+            boardState = state.boardState,
+            onBack = viewModel::onDismissBoardView,
+            onRefresh = viewModel::onRequestBoard
+        )
+        return
+    }
+
     val listState = rememberScalingLazyListState()
 
     Box(
@@ -416,6 +442,17 @@ fun ChessMoveScreen(viewModel: ChessMoveViewModel = viewModel()) {
                             modifier = Modifier.weight(1f)
                         ) { viewModel.onOfferDraw() }
                     }
+                }
+
+                // Row – board view
+                item {
+                    WideChipButton(
+                        label = "BOARD",
+                        color = ColorFile,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
+                    ) { viewModel.onRequestBoard() }
                 }
 
                 // ---- Move history ----

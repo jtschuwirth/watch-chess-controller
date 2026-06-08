@@ -24,7 +24,9 @@ data class MoveInputState(
     val moveHistory: List<MovePair> = emptyList(),
     val playerColor: String? = null,
     val gameResult: String? = null,
-    val gamePaused: Boolean = false
+    val gamePaused: Boolean = false,
+    val boardState: String? = null,   // null = not yet fetched; "UNAVAILABLE" = provider doesn't support it
+    val showBoardView: Boolean = false
 ) {
     val hasInput: Boolean get() = currentInput.isNotEmpty()
     val gameActive: Boolean get() = (playerColor == "W" || playerColor == "B") && gameResult == null && !gamePaused

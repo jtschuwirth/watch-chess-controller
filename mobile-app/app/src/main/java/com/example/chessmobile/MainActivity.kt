@@ -79,6 +79,7 @@ fun ChessMobileScreen() {
     val navigateToHome by MoveRepository.navigateToHome.collectAsStateWithLifecycle()
     val resumableSessions by MoveRepository.resumableSessions.collectAsStateWithLifecycle()
     val isTtsEnabled by MoveRepository.isTtsEnabled.collectAsStateWithLifecycle()
+    val gameStartError by MoveRepository.gameStartError.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val keyboardViewModel: MobileKeyboardViewModel = viewModel()
@@ -113,6 +114,20 @@ fun ChessMobileScreen() {
     // Close keyboard when leaving the in-game screen
     LaunchedEffect(currentScreen) {
         if (currentScreen != AppScreen.IN_GAME) showKeyboard = false
+    }
+
+    // Show error dialog if the game failed to start
+    if (gameStartError != null) {
+        AlertDialog(
+            onDismissRequest = { MoveRepository.clearGameStartError() },
+            title = { Text("Failed to Start Game") },
+            text = { Text(gameStartError!!) },
+            confirmButton = {
+                TextButton(onClick = { MoveRepository.clearGameStartError() }) {
+                    Text("OK")
+                }
+            }
+        )
     }
 
     // Scroll to bottom when a new move arrives

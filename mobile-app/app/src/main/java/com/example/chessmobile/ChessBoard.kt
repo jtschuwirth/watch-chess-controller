@@ -271,6 +271,32 @@ class ChessBoard {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Serialize current board state for transmission to the watch
+    // -------------------------------------------------------------------------
+
+    fun getBoardStateSerialized(): String {
+        val order = listOf(
+            PieceType.KING, PieceType.QUEEN, PieceType.ROOK,
+            PieceType.BISHOP, PieceType.KNIGHT, PieceType.PAWN
+        )
+        fun colorSection(color: ChessColor): String {
+            val pieces = mutableListOf<String>()
+            for (pt in order) {
+                for (rank in 0..7) {
+                    for (file in 0..7) {
+                        val p = board[rank][file] ?: continue
+                        if (p.color == color && p.type == pt) {
+                            pieces += "${pt.char}${'a' + file}${rank + 1}"
+                        }
+                    }
+                }
+            }
+            return pieces.joinToString(",")
+        }
+        return "W:${colorSection(ChessColor.WHITE)}|B:${colorSection(ChessColor.BLACK)}"
+    }
+
     private fun isPathClear(src: Square, dest: Square): Boolean {
         val df = Integer.signum(dest.file - src.file)
         val dr = Integer.signum(dest.rank - src.rank)

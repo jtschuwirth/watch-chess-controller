@@ -6,6 +6,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import com.google.android.gms.wearable.Wearable
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -82,13 +90,23 @@ object MoveRepository {
     private val _navigateToHome = MutableStateFlow(false)
     val navigateToHome: StateFlow<Boolean> = _navigateToHome.asStateFlow()
 
+    private val _gameStartError = MutableStateFlow<String?>(null)
+    val gameStartError: StateFlow<String?> = _gameStartError.asStateFlow()
+    fun clearGameStartError() { _gameStartError.value = null }
+
     private val _isTtsEnabled = MutableStateFlow(false)
     val isTtsEnabled: StateFlow<Boolean> = _isTtsEnabled.asStateFlow()
 
     private var appContext: android.content.Context? = null
 
+    // Polling: detect missed stream events by tracking when we started waiting for an opponent move
+    @Volatile private var waitingForOpponentSince: Long? = null
+    @Volatile private var immediateUpdateOnNextWait = false
+    private var pollingJob: Job? = null
+
     private val providerCallbacks = object : GameProviderCallbacks {
         override fun onOpponentMove(san: String, sendToWatch: Boolean) {
+            stopWaitingForOpponent()
             recordOpponentMove(san)
             updateLastMoveStatus(MoveStatus.EXECUTED)
             if (sendToWatch) {
@@ -112,6 +130,21 @@ object MoveRepository {
         }
         override fun onHistoryRestored(entries: List<MoveEntry>) {
             restoreHistory(entries)
+            val info = gameInfo.value ?: return
+            // MoveEntry invariant: move = White's half, response = Black's half (always).
+            // Determine if it is currently the opponent's turn so polling can track it.
+            val isOpponentTurn = when {
+                entries.isEmpty() -> info.playerColor == ChessColor.BLACK  // White (opponent) moves first
+                info.playerColor == ChessColor.WHITE -> entries.last().response == null  // waiting for Black
+                else -> entries.last().response != null  // Black played; waiting for White's next
+            }
+            if (isOpponentTurn) startWaitingForOpponent() else stopWaitingForOpponent()
+        }
+        override fun onGameStartFailed(error: String) {
+            val ctx = appContext ?: return
+            _gameStartError.value = error
+            endGame(ctx)
+            _navigateToHome.value = true
         }
     }
 
@@ -126,6 +159,38 @@ object MoveRepository {
 
     fun toggleTts() {
         _isTtsEnabled.value = !_isTtsEnabled.value
+    }
+
+    private fun startWaitingForOpponent() {
+        waitingForOpponentSince = System.currentTimeMillis()
+        if (immediateUpdateOnNextWait) {
+            immediateUpdateOnNextWait = false
+            _activeProvider.value?.requestMoveUpdate()
+        }
+    }
+
+    private fun stopWaitingForOpponent() {
+        waitingForOpponentSince = null
+    }
+
+    private fun startPolling() {
+        pollingJob?.cancel()
+        pollingJob = CoroutineScope(Dispatchers.Default + SupervisorJob()).launch {
+            while (isActive) {
+                delay(5_000L)
+                val since = waitingForOpponentSince ?: continue
+                if (System.currentTimeMillis() - since >= 5_000L) {
+                    _activeProvider.value?.requestMoveUpdate()
+                }
+            }
+        }
+    }
+
+    private fun stopPolling() {
+        pollingJob?.cancel()
+        pollingJob = null
+        waitingForOpponentSince = null
+        immediateUpdateOnNextWait = false
     }
 
     private fun speakIfEnabled(move: String) {
@@ -284,9 +349,15 @@ object MoveRepository {
         }
         provider.setCallbacks(providerCallbacks)
         provider.onGameStart(config, context)
+        // For async providers (Lichess), if we play Black the opponent moves first — start waiting
+        if (playerColor == ChessColor.BLACK && provider.executesMovesExternally) {
+            startWaitingForOpponent()
+        }
+        startPolling()
     }
 
     fun endGame(context: Context) {
+        stopPolling()
         _activeProvider.value?.onGameEnd()
         _activeProvider.value = null
         _gameInfo.value = null
@@ -315,6 +386,9 @@ object MoveRepository {
         // Save current session for later resumption
         val session = GameSession(gameInfo, _moves.value, provider)
         _pausedSessions.update { it + (provider.name to session) }
+
+        // Stop polling before pausing — no point checking for moves while paused
+        stopPolling()
 
         // Let the provider pause itself (Lichess: saves to store & disconnects stream)
         provider.onGamePause()
@@ -350,6 +424,10 @@ object MoveRepository {
 
         val pausedSession = _pausedSessions.value[providerName]
 
+        // Signal that once we know whose turn it is (onHistoryRestored), we should immediately
+        // request the latest state from Lichess in case we missed moves while paused.
+        immediateUpdateOnNextWait = true
+
         if (pausedSession != null) {
             // Warm resume: live provider instance still exists
             _activeProvider.value = pausedSession.provider
@@ -375,6 +453,7 @@ object MoveRepository {
             provider.onGameResume(context, emptyList())
         }
 
+        startPolling()
         initTts(context)
         startForegroundService(context)
 
@@ -405,6 +484,7 @@ object MoveRepository {
      * phone can show the result screen before the user dismisses it.
      */
     fun endGameWithResult(status: String, winner: String?, context: Context) {
+        stopPolling()
         val resultMsg = formatGameResult(status, winner)
         _activeProvider.value?.onGameEnd()
         _activeProvider.value = null
@@ -524,6 +604,7 @@ object MoveRepository {
                 }
                 if (provider.executesMovesExternally) {
                     updateLastMoveStatus(MoveStatus.EXECUTED)
+                    if (opponentMove == null) startWaitingForOpponent()
                 } else {
                     ChessAccessibilityService.instance?.executeMove(move)
                         ?: updateLastMoveStatus(MoveStatus.FAILED, "Accessibility service not enabled.")

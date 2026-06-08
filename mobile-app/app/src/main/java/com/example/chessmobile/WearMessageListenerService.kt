@@ -32,6 +32,8 @@ class WearMessageListenerService : WearableListenerService() {
         private const val PATH_CHESS_RESIGN = "/chess/resign"
         private const val PATH_CHESS_DRAW_OFFER = "/chess/draw/offer"
         private const val PATH_CHESS_HOME = "/chess/home"
+        private const val PATH_BOARD_REQUEST = "/chess/board/request"
+        private const val PATH_BOARD_RESPONSE = "/chess/board/response"
     }
 
     override fun onPeerConnected(peer: com.google.android.gms.wearable.Node) {
@@ -53,6 +55,7 @@ class WearMessageListenerService : WearableListenerService() {
                 Log.d(TAG, "Home requested by watch")
                 MoveRepository.requestPauseGame(this)
             }
+            PATH_BOARD_REQUEST -> handleBoardRequest(messageEvent)
             else -> Log.w(TAG, "Unknown path: ${messageEvent.path}")
         }
     }
@@ -118,6 +121,12 @@ class WearMessageListenerService : WearableListenerService() {
         val payload = if (moveParts.isEmpty()) colorChar else "$colorChar|$moveParts"
         sendMessage(event.sourceNodeId, PATH_CHESS_SYNC_RESPONSE, payload)
         Log.d(TAG, "Sync response sent: $payload")
+    }
+
+    private fun handleBoardRequest(event: MessageEvent) {
+        val boardState = MoveRepository.activeProvider.value?.getBoardState() ?: "UNAVAILABLE"
+        sendMessage(event.sourceNodeId, PATH_BOARD_RESPONSE, boardState)
+        Log.d(TAG, "Board state sent: $boardState")
     }
 
     private fun sendErrorToWatch(nodeId: String, error: String) {
